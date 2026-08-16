@@ -1,0 +1,37 @@
+name: "koine gate"
+description: >-
+  Fail CI when multilingual docs have silently drifted: stale translations,
+  files edited outside the pipeline, broken audit chains, glossary violations.
+branding:
+  icon: "globe"
+  color: "purple"
+
+inputs:
+  source:
+    description: "Source document (e.g. README.md)"
+    required: true
+  translations:
+    description: "Space-separated lang=path pairs (e.g. 'es=README.es.md ru=README.ru.md')"
+    required: true
+  koine-dir:
+    description: "State directory"
+    default: ".koine"
+  forbid-machine-only:
+    description: "Fail on unreviewed machine translations"
+    default: "false"
+  forbid-legacy:
+    description: "Fail on adopted-but-unverified legacy pairs"
+    default: "false"
+
+runs:
+  using: "composite"
+  steps:
+    - shell: bash
+      run: |
+        pip install --quiet koine || pip install --quiet -e ${{ github.action_path }}/..
+        ARGS=""
+        for t in ${{ inputs.translations }}; do ARGS="$ARGS --translation $t"; done
+        [ "${{ inputs.forbid-machine-only }}" = "true" ] && ARGS="$ARGS --forbid-machine-only"
+        [ "${{ inputs.forbid-legacy }}" = "true" ] && ARGS="$ARGS --forbid-legacy"
+        python3 -m koine --koine-dir "${{ inputs.koine-dir }}" gate \
+          --source "${{ inputs.source }}" $ARGS
