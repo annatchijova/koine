@@ -4,7 +4,7 @@ Each test here corresponds to a defect that produced a *green* gate over a
 corrupted or unpromotable translation — the exact failure mode the project
 exists to make impossible.
 """
-import sys
+import json
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
@@ -16,7 +16,8 @@ from koine.agents import contracts
 from koine.agents.orchestrator import NO_FINDINGS, run_cycle
 from koine.blocks import freeze, split_blocks, thaw
 from koine.glossary import Glossary
-from koine.ledger import Ledger, verify
+from koine.gate import run_gate
+from koine.ledger import Ledger, _entry_hash, verify, verify_chain
 from koine.store import Store
 from koine.__main__ import main as cli
 
@@ -99,7 +100,11 @@ def test_submit_writes_at_the_adopted_index_not_the_source_index(tmp_path):
 def test_block_mapping_is_read_from_the_ledger(tmp_path):
     src, tr, ledger = _offset_repo(tmp_path)
     mapping = st.block_mapping(ledger, Path(src).as_posix(), "es")
-    assert mapping == {0: 1, 2: 3}   # banner at translation index 0 is an orphan
+    # every aligned block is mapped, the fence (source 1 → translation 2)
+    # included: an unrecorded placement leaves its translation block mapped
+    # from nothing, which reads as UNSOURCED content
+    assert mapping == {0: 1, 1: 2, 2: 3}
+    assert 0 not in mapping.values()   # the banner is an orphan, mapped from nothing
 
 
 def test_placement_refuses_to_overwrite_another_blocks_translation(tmp_path):
@@ -233,3 +238,182 @@ def test_cli_glossary_bind_unknown_term_reports_instead_of_creating(tmp_path, ca
                 "--term", "ghost", "--by", "anna"])
     assert code == 1
     assert "propose it first" in capsys.readouterr().out
+
+
+# ---------- a truncated tail is a valid chain ----------
+
+def _chain(tmp_path, n=6):
+    ledger = Ledger(tmp_path / "chain.jsonl")
+    for i in range(n):
+        ledger.append(op="translate", doc="README.md", lang="es", block_index=i,
+                      source_hash="a" * 64, translation_hash="b" * 64,
+                      seq_time="2026-01-01T00:00:00+00:00", meta={})
+    return ledger
+
+
+def test_linkage_and_integrity_cannot_see_a_truncated_tail(tmp_path):
+    """The gap the anchor exists to close: entries 0..3 of a valid 0..5 chain
+    are themselves a perfectly valid chain, so `verify` alone passes them."""
+    ledger = _chain(tmp_path)
+    lines = ledger.path.read_text(encoding="utf-8").splitlines()
+    ledger.path.write_text("\n".join(lines[:4]) + "\n", encoding="utf-8")
+    report = verify(ledger.entries())
+    assert report["linkage_ok"] and report["integrity_ok"]   # blind, by construction
+
+
+def test_anchor_catches_the_truncated_tail(tmp_path):
+    ledger = _chain(tmp_path)
+    lines = ledger.path.read_text(encoding="utf-8").splitlines()
+    ledger.path.write_text("\n".join(lines[:4]) + "\n", encoding="utf-8")
+    report = verify_chain(ledger)
+    assert report["truncated"] and not report["ok"]
+    assert "2 entries were removed" in " ".join(report["issues"])
+
+
+def test_anchor_catches_a_tail_rebuilt_with_valid_hashes(tmp_path):
+    """The attack linkage and integrity are blind to: drop the last entry and
+    re-append a forged one with correctly recomputed hashes. The chain checks
+    out end to end; only the anchor's head disagrees."""
+    ledger = _chain(tmp_path)
+    entries = ledger.entries()[:-1]
+    payload = dict(entries[-1]["payload"], meta={"forged": True})
+    prev = entries[-1]["audit_hash"]
+    entries.append({"seq": len(entries), "payload": payload, "prev_hash": prev,
+                    "audit_hash": _entry_hash(payload, prev)})
+    ledger.path.write_text(
+        "\n".join(json.dumps(e, sort_keys=True) for e in entries) + "\n",
+        encoding="utf-8")
+
+    assert verify(ledger.entries())["linkage_ok"]     # forgery is well-formed
+    assert verify(ledger.entries())["integrity_ok"]
+    report = verify_chain(ledger)
+    assert report["truncated"] and not report["ok"]
+    assert "head does not match the anchor" in " ".join(report["issues"])
+
+
+def test_an_unanchored_chain_is_intact_but_says_what_it_cannot_prove(tmp_path):
+    ledger = _chain(tmp_path)
+    ledger.anchor_path.unlink()          # a chain written before anchors existed
+    report = verify_chain(ledger)
+    assert report["ok"] is True          # nothing is actually broken
+    assert report["anchored"] is False   # but the truncation guarantee is void
+
+
+def test_a_corrupt_line_is_reported_not_raised(tmp_path):
+    ledger = _chain(tmp_path, n=2)
+    ledger.path.write_text(ledger.path.read_text(encoding="utf-8") + '{"half-writ',
+                           encoding="utf-8")
+    report = verify_chain(ledger)        # must not raise JSONDecodeError
+    assert not report["ok"]
+    assert "not valid JSON" in " ".join(report["issues"])
+
+
+def test_cli_verify_names_truncation_distinctly(tmp_path, capsys):
+    store = Store(tmp_path / ".koine")
+    ledger = store.ledger("es")
+    for i in range(4):
+        ledger.append(op="translate", doc="R.md", lang="es", block_index=i,
+                      source_hash="a" * 64, translation_hash="b" * 64,
+                      seq_time="2026-01-01T00:00:00+00:00", meta={})
+    lines = ledger.path.read_text(encoding="utf-8").splitlines()
+    ledger.path.write_text("\n".join(lines[:2]) + "\n", encoding="utf-8")
+    assert cli(["--koine-dir", str(tmp_path / ".koine"), "verify"]) == 2
+    assert "TRUNCATED" in capsys.readouterr().out
+
+
+# ---------- content the source never said ----------
+
+UNSOURCED_SRC = "# t\n\nUno.\n\nDos.\n"
+
+
+def _translated_pair(tmp_path):
+    src = tmp_path / "R.md"
+    tr = tmp_path / "R.es.md"
+    src.write_text(UNSOURCED_SRC, encoding="utf-8")
+    ledger = Ledger(tmp_path / "led.jsonl")
+    run_cycle(source_path=str(src), translation_file=str(tr), lang="es",
+              ledger=ledger, glossary=Glossary(),
+              translate_fn=lambda t: t, review_fn=lambda s, c: NO_FINDINGS)
+    return src, tr, ledger
+
+
+def test_appending_to_a_translation_is_not_silently_current(tmp_path):
+    """Appending edits no *recorded* block, so every hash check passes and the
+    gate used to report `all translations current` over a paragraph the source
+    never contained."""
+    src, tr, ledger = _translated_pair(tmp_path)
+    assert all(s.state == st.CURRENT for s in st.derive_states(src, tr, "es", ledger)
+               if s.state != st.NOT_TRANSLATABLE)
+
+    tr.write_text(tr.read_text(encoding="utf-8") + "\nInvented paragraph.\n",
+                  encoding="utf-8")
+    states = st.derive_states(src, tr, "es", ledger)
+    unsourced = [s for s in states if s.state == st.UNSOURCED]
+    assert len(unsourced) == 1
+    assert unsourced[0].side == "translation"
+
+
+def test_gate_fails_on_unsourced_content(tmp_path, capsys):
+    src, tr, ledger = _translated_pair(tmp_path)
+    tr.write_text(tr.read_text(encoding="utf-8") + "\nInvented paragraph.\n",
+                  encoding="utf-8")
+    assert run_gate(str(src), {"es": str(tr)}, str(ledger.path)) == 2
+    assert "UNSOURCED" in capsys.readouterr().out
+
+
+def test_an_orphan_known_at_adoption_is_allowed_but_visible(tmp_path, capsys):
+    src, tr, ledger = _offset_repo(tmp_path)     # the banner has no source block
+    states = st.derive_states(src, tr, "es", ledger)
+    orphans = [s for s in states if s.state == st.LEGACY_ORPHAN]
+    assert [s.block_index for s in orphans] == [0]
+    assert run_gate(str(src), {"es": str(tr)}, str(ledger.path)) == 0
+    assert "LEGACY_ORPHAN" in capsys.readouterr().out
+
+
+def test_editing_an_adopted_orphan_makes_it_unsourced(tmp_path):
+    """Orphan identity is the content hash, not the index: an edited orphan is
+    not the orphan that was adopted."""
+    src, tr, ledger = _offset_repo(tmp_path)
+    tr.write_text(tr.read_text(encoding="utf-8").replace(
+        "Nota de traduccion.", "Nota de traduccion, REESCRITA."), encoding="utf-8")
+    states = st.derive_states(src, tr, "es", ledger)
+    assert any(s.state == st.UNSOURCED for s in states)
+
+
+def test_koine_makes_no_claim_about_a_pair_it_has_no_records_for(tmp_path):
+    """With no placement events, calling the translation's contents unsourced
+    would be a claim koine cannot back."""
+    src = tmp_path / "R.md"
+    tr = tmp_path / "R.es.md"
+    src.write_text(UNSOURCED_SRC, encoding="utf-8")
+    tr.write_text("Traduccion hecha a mano, jamas adoptada.\n", encoding="utf-8")
+    states = st.derive_states(src, tr, "es", Ledger(tmp_path / "empty.jsonl"))
+    assert not any(s.state == st.UNSOURCED for s in states)
+
+
+def test_gate_summary_does_not_claim_all_current_when_it_is_not(tmp_path, capsys):
+    src, tr, ledger = _offset_repo(tmp_path)
+    run_gate(str(src), {"es": str(tr)}, str(ledger.path))
+    out = capsys.readouterr().out
+    assert "all translations current" not in out
+    assert "not all current" in out
+
+
+def test_a_lagging_anchor_is_reported_but_is_not_truncation(tmp_path, capsys):
+    """A crash between the entry write and the anchor write loses nothing, so
+    it must not read as truncation — but it must not read as a clean VERIFIED
+    either."""
+    store = Store(tmp_path / ".koine")
+    ledger = store.ledger("es")
+    for i in range(3):
+        ledger.append(op="translate", doc="R.md", lang="es", block_index=i,
+                      source_hash="a" * 64, translation_hash="b" * 64,
+                      seq_time="2026-01-01T00:00:00+00:00", meta={})
+    anchor = json.loads(ledger.anchor_path.read_text(encoding="utf-8"))
+    anchor["count"] -= 1
+    ledger.anchor_path.write_text(json.dumps(anchor), encoding="utf-8")
+
+    report = verify_chain(ledger)
+    assert report["ok"] and not report["truncated"] and report["anchor_lag"] == 1
+    assert cli(["--koine-dir", str(tmp_path / ".koine"), "verify"]) == 0
+    assert "anchor lags by 1" in capsys.readouterr().out

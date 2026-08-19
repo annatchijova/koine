@@ -143,13 +143,20 @@ def mirror_untranslatable(*, source_path: str, translation_file: str, lang: str,
     mapping = block_mapping(ledger, doc, lang)
     seq_time = _dt.datetime.now(_dt.timezone.utc).isoformat()
 
+    events = latest_events(ledger)
     mirrored: list[int] = []
     for b in src_blocks:
         if b.kind not in NEVER_TRANSLATED_KINDS:
             continue
         target = mapping.get(b.index)
-        if target is not None and target < len(raws) and raws[target] == b.raw:
-            continue  # already mirrored and unchanged
+        ev = events.get((doc, lang, b.index))
+        if (target is not None and target < len(raws) and ev is not None
+                and ev["payload"]["source_hash"] == b.source_hash):
+            # placed, and the source has not changed since. Decided from the
+            # ledger, not from comparing bytes: an adopted fence may differ
+            # from the source (a localized comment), and re-copying over it
+            # because the bytes differ would silently discard that.
+            continue
         target, shifted = _place(raws, mapping, b.index, b.raw)
         mapping[b.index] = target
         mapping.update(shifted)

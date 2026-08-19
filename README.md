@@ -14,9 +14,9 @@ as up to date.** State is derived from hashes alone.
 
 ## The one invariant
 
-A translation's state (`CURRENT`, `STALE`, `TAMPERED`, `MACHINE_ONLY`,
-`UNTRANSLATED`) is a pure function of content hashes and a tamper-evident
-ledger — including *where* each translated block lives, which is read from
+A translation's state (`CURRENT`, `STALE`, `TAMPERED`, `UNSOURCED`,
+`MACHINE_ONLY`, `UNTRANSLATED`, …) is a pure function of content hashes and a
+tamper-evident ledger — including *where* each translated block lives, which is read from
 the ledger and never inferred from the source's own block numbering (a
 translation with a banner the source lacks is not index-aligned with it).
 The fleet's language models:
@@ -40,15 +40,42 @@ any koine code.
 |---|---|---|
 | Source paragraph edited after translation | `STALE` | exit 1 |
 | Doc never translated to a language | `UNTRANSLATED` | exit 1 |
-| Translated file edited outside the pipeline | `TAMPERED` | exit 2 |
-| Ledger rewritten, reordered, or truncated | broken chain | exit 2 |
+| Recorded translation block edited by hand | `TAMPERED` | exit 2 |
+| Content added to a translation the source never had | `UNSOURCED` | exit 2 |
+| Ledger rewritten or reordered | broken chain | exit 2 |
+| Ledger tail truncated or rebuilt | anchor mismatch | exit 2 |
 | Binding glossary term rendered differently | violation | exit 1 |
 | Unreviewed machine translation | `MACHINE_ONLY` | visible, allowed by default |
 | Adopted legacy pair, meaning never verified | `LEGACY_UNVERIFIED` | visible, allowed by default |
+| Orphan block present when the pair was adopted | `LEGACY_ORPHAN` | visible, allowed by default |
 
 `MACHINE_ONLY` is koine's honest answer to languages the maintainer cannot
 review: the translation ships, labeled as machine-maintained, never
 laundered into `CURRENT`. An honest "unverified" beats a confident lie.
+
+The last four rows are the ones a summary is tempted to round off, so the
+gate refuses to: when it passes with any of them present it prints
+*"passing — nothing stale or tampered, but not all current: …"*, never
+"all translations current".
+
+### Two things hashes alone cannot see
+
+**Content the source never had.** Appending a paragraph to a translated file
+edits no *recorded* block, so every hash still matches. The check that sees it
+runs on the translation side: any block no source block maps to is `UNSOURCED`.
+Orphans that already existed when the pair was adopted are recorded by content
+hash and allowed as `LEGACY_ORPHAN` — identity is the hash, so an orphan that is
+later edited is no longer the one that was adopted. With no records for a pair
+at all, koine says nothing about it rather than making a claim it cannot back.
+
+**A truncated tail.** Entries 0..7 of a valid 0..9 chain are themselves a valid
+chain, so linkage and integrity pass. Each chain therefore keeps an `anchor`
+sidecar naming its expected head and length. Its limit, stated plainly: it makes
+truncation a two-file edit visible in review and in git history, and it catches
+accidental loss — a bad merge, a partial write, one file reverted. It does not
+stop someone who rewrites both files; only a copy koine does not control, such
+as the remote git history, does that. A chain with no anchor is reported as
+`VERIFIED (unanchored: truncation undetectable)`, never a bare `VERIFIED`.
 
 ## The fleet (Google ADK)
 
@@ -69,7 +96,9 @@ the source by structure, seeds the per-language ledgers, and — crucially —
 records every adopted pair as `LEGACY_UNVERIFIED`, never `CURRENT`: alignment
 is a hypothesis, and koine refuses to mint trust it cannot back. Orphan
 translation blocks (content with no source counterpart, usually sections
-deleted from the source but never from the translation) are reported.
+deleted from the source but never from the translation) are reported *and
+recorded by content hash*, so the gate can later tell them apart from content
+appended to the translation after adoption.
 
 ```bash
 python3 -m koine adopt --source README.md \
@@ -142,14 +171,17 @@ tested without any credential), and driveable from the CLI via `koine
 translate`; Cloud Run deployment and the GitHub webhook watcher are still in
 progress. Pre-existing work: none — see ATTRIBUTIONS.md.
 
-Three defects that produced a **green gate over a broken translation** are
-fixed and pinned by regression tests in `tests/test_placement.py`:
+Five defects that produced a **green gate over a broken translation** are
+fixed and pinned by regression tests in `tests/test_placement.py`. Two of them
+contradicted guarantees this README already made:
 
 | Defect | What it did | Now |
 |---|---|---|
 | Placement assumed source-index alignment | overwrote an adopted translation's code fence with prose, duplicated the stale paragraph, reported `CURRENT` | placement is read from the ledger; a collision or a missing recorded block is a mechanical rejection |
 | `freeze` applied its patterns in sequence | a later pattern swallowed an earlier placeholder (`<a href="https://x">`), so the block could never be thawed and stayed `UNTRANSLATED` forever — **2.1% of 24k real-world markdown blocks** | one non-overlapping left-to-right scan; 0 failures on the same corpus |
 | Ledger appends were unlocked | concurrent writers read the same tail and forked the chain | the read-tail-and-write is held under an exclusive lock |
+| Nothing looked at the translation side | appending a paragraph the source never contained edited no recorded block, so the gate printed `all translations current`, exit 0 | unmapped translation blocks are `UNSOURCED`, exit 2; orphans known at adoption stay allowed as `LEGACY_ORPHAN` |
+| Truncation was claimed but not checked | deleting the last N ledger entries left a chain that passes linkage *and* integrity — the README promised exit 2 and delivered exit 0 | each chain keeps an anchor of its expected head and length; unanchored chains say so instead of reporting a bare `VERIFIED` |
 
 ## License
 

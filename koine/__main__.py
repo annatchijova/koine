@@ -20,7 +20,7 @@ from . import state as st
 from .adopt import adopt
 from .gate import run_gate
 from .glossary import KEEP_VERBATIM, Glossary
-from .ledger import verify
+from .ledger import verify_chain
 from .store import Store
 
 
@@ -58,7 +58,8 @@ def cmd_status(args) -> int:
         print(f"[{lang}] {summary}")
         for s in states:
             if s.state not in (st.CURRENT, st.NOT_TRANSLATABLE):
-                print(f"    block {s.block_index}: {s.state}"
+                where = "translation block" if s.side == "translation" else "block"
+                print(f"    {where} {s.block_index}: {s.state}"
                       + (f" — {s.detail}" if s.detail else ""))
     return 0
 
@@ -183,12 +184,24 @@ def cmd_verify(args) -> int:
         return 0
     worst = 0
     for lang in langs:
-        report = verify(store.ledger(lang).entries())
-        ok = report["linkage_ok"] and report["integrity_ok"]
-        print(f"[{lang}] {'VERIFIED' if ok else 'BROKEN'}")
+        report = verify_chain(store.ledger(lang))
+        if report["ok"]:
+            # never a bare VERIFIED while something is off: an unanchored chain
+            # is intact but its tail could have been truncated without leaving a
+            # trace, and a lagging anchor means a write did not finish
+            if not report["anchored"]:
+                status = "VERIFIED (unanchored: truncation undetectable)"
+            elif report["anchor_lag"]:
+                status = (f"VERIFIED (anchor lags by {report['anchor_lag']}; "
+                          f"the next append re-anchors)")
+            else:
+                status = "VERIFIED"
+        else:
+            status = "TRUNCATED" if report["truncated"] else "BROKEN"
+        print(f"[{lang}] {status} — {report['entries']} entries")
         for issue in report["issues"]:
             print(f"    - {issue}")
-        if not ok:
+        if not report["ok"]:
             worst = 2
     return worst
 

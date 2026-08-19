@@ -14,7 +14,7 @@ from pathlib import Path
 
 from . import state as st
 from .glossary import Glossary
-from .ledger import Ledger, verify
+from .ledger import Ledger, verify_chain
 
 
 def run_gate(source: str, translations: dict, ledger_path: str,
@@ -23,32 +23,52 @@ def run_gate(source: str, translations: dict, ledger_path: str,
              allow_legacy: bool = True) -> int:
     ledger = Ledger(ledger_path)
 
-    chain = verify(ledger.entries())
-    if not (chain["linkage_ok"] and chain["integrity_ok"]):
+    chain = verify_chain(ledger)
+    if not chain["ok"]:
         print("LEDGER BROKEN:")
         for issue in chain["issues"]:
             print(f"  - {issue}")
         return 2
+    if not chain["anchored"]:
+        # not a failure, but the truncation guarantee does not hold here and
+        # a silent "all current" would imply it does
+        print(f"note: {ledger.path.name} has no anchor; a truncated tail "
+              f"would not be detected. Any append writes one.")
 
     worst = 0
+    tolerated: dict[str, int] = {}   # states allowed through, counted by name
     glossary = Glossary.load(glossary_path) if glossary_path else Glossary([])
     src_text = Path(source).read_text(encoding="utf-8")
 
     for lang, path in sorted(translations.items()):
         states = st.derive_states(source, path, lang, ledger)
         for s in states:
+            where = "translation block" if s.side == "translation" else "block"
             if s.state == st.TAMPERED:
                 print(f"[{lang}] block {s.block_index}: TAMPERED — {s.detail}")
                 worst = max(worst, 2)
+            elif s.state == st.UNSOURCED:
+                # editing a translated file outside the pipeline, by growing it
+                print(f"[{lang}] {where} {s.block_index}: UNSOURCED — {s.detail}")
+                worst = max(worst, 2)
+            elif s.state == st.LEGACY_ORPHAN:
+                print(f"[{lang}] {where} {s.block_index}: LEGACY_ORPHAN — {s.detail}")
+                tolerated[st.LEGACY_ORPHAN] = tolerated.get(st.LEGACY_ORPHAN, 0) + 1
+                if not allow_legacy:
+                    worst = max(worst, 1)
             elif s.state in (st.STALE, st.UNTRANSLATED):
                 print(f"[{lang}] block {s.block_index}: {s.state} {s.detail}")
                 worst = max(worst, 1)
-            elif s.state == st.MACHINE_ONLY and not allow_machine_only:
-                print(f"[{lang}] block {s.block_index}: MACHINE_ONLY not allowed here")
-                worst = max(worst, 1)
+            elif s.state == st.MACHINE_ONLY:
+                if not allow_machine_only:
+                    print(f"[{lang}] block {s.block_index}: MACHINE_ONLY not allowed here")
+                    worst = max(worst, 1)
+                else:
+                    tolerated[st.MACHINE_ONLY] = tolerated.get(st.MACHINE_ONLY, 0) + 1
             elif s.state == st.LEGACY_UNVERIFIED:
                 # always visible; blocking is opt-in
                 print(f"[{lang}] block {s.block_index}: LEGACY_UNVERIFIED — {s.detail}")
+                tolerated[st.LEGACY_UNVERIFIED] = tolerated.get(st.LEGACY_UNVERIFIED, 0) + 1
                 if not allow_legacy:
                     worst = max(worst, 1)
 
@@ -59,7 +79,16 @@ def run_gate(source: str, translations: dict, ledger_path: str,
                 worst = max(worst, 1)
 
     if worst == 0:
-        print("koine gate: all translations current")
+        # "all current" is a claim, so make it only when it is true: blocks
+        # koine deliberately lets through (machine-only, legacy, orphans) are
+        # not current, and a summary that hides them is the exact kind of
+        # confident half-truth this tool exists to catch
+        if tolerated:
+            kinds = ", ".join(f"{n} {k}" for k, n in sorted(tolerated.items()))
+            print(f"koine gate: passing — nothing stale or tampered, "
+                  f"but not all current: {kinds}")
+        else:
+            print("koine gate: all translations current")
     return worst
 
 
