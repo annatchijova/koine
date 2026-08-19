@@ -65,6 +65,12 @@ def run_cycle(*, source_path: str, translation_file: str, lang: str,
     """One pass over every UNTRANSLATED/STALE block for `lang`, in block order.
     Each block is re-derived from the ledger before it is touched, so a
     rejection or a submit failure on block N never blocks block N+1."""
+    # code fences and frontmatter first: copied verbatim, so the translated
+    # file carries them and every later block lands at a known position
+    contracts.mirror_untranslatable(
+        source_path=source_path, translation_file=translation_file,
+        lang=lang, ledger=ledger)
+
     states = derive_states(source_path, translation_file, lang, ledger)
     results = []
     for s in states:

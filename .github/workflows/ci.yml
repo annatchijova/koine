@@ -9,10 +9,12 @@ jobs:
         with: { python-version: "3.12" }
       - run: pip install -e ".[dev]"
       - run: python -m pytest -q
+      # freeze/thaw must roundtrip byte-identically over every doc in the repo
+      - run: python scripts/torture.py .
       # The koine gate, gating koine's own docs — the artifact demonstrates itself
       - run: |
-          if [ -f .koine/ledger.jsonl ]; then
-            python -m koine.gate --source README.md \
-              --translation es=README.es.md --translation ru=README.ru.md \
-              --ledger .koine/ledger.jsonl --glossary .koine/glossary.json
+          if [ -f .koine/manifest.json ]; then
+            python -m koine verify
+            python -m koine gate --source README.md \
+              --translation es=README.es.md --translation ru=README.ru.md
           fi

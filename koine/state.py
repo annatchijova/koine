@@ -33,7 +33,7 @@ LEGACY_UNVERIFIED = "LEGACY_UNVERIFIED"
 NOT_TRANSLATABLE = "NOT_TRANSLATABLE"
 
 # block kinds that are never eligible for translation (see blocks.split_blocks)
-_NEVER_TRANSLATED_KINDS = ("fence", "frontmatter")
+NEVER_TRANSLATED_KINDS = ("fence", "frontmatter")
 
 
 @dataclass
@@ -45,13 +45,37 @@ class BlockState:
     detail: str = ""
 
 
+# ops that carry a (source block → translation block) placement. "translate"
+# records a new translation; "remap" restates an existing one whose position in
+# the translated file shifted; "mirror" records a never-translated block copied
+# verbatim. All three are placement facts, so all three are folded here.
+_PLACEMENT_OPS = ("translate", "remap", "mirror")
+
+
 def latest_events(ledger: Ledger) -> dict:
-    """(doc, lang, block_index) → last 'translate' event."""
+    """(doc, lang, block_index) → last placement event."""
     out = {}
     for e in ledger.entries():
         p = e["payload"]
-        if p["op"] == "translate":
+        if p["op"] in _PLACEMENT_OPS:
             out[(p["doc"], p["lang"], p["block_index"])] = e
+    return out
+
+
+def block_mapping(ledger: Ledger, doc: str, lang: str) -> dict[int, int]:
+    """source block index → translation block index, for one (doc, lang).
+
+    The translated file is *not* required to be index-aligned with the source:
+    an adopted translation may carry a banner the source lacks, or omit a
+    section. Writing a new translation at the source's own index would then
+    silently overwrite an unrelated block — so placement is read from the
+    ledger, never assumed.
+    """
+    out: dict[int, int] = {}
+    for (d, l, idx), e in latest_events(ledger).items():
+        if d == doc and l == lang:
+            meta = e["payload"].get("meta", {})
+            out[idx] = meta.get("translation_block_index", idx)
     return out
 
 
@@ -70,7 +94,7 @@ def derive_states(source_path: str | Path, translation_path: str | Path,
 
     states: list[BlockState] = []
     for b in src_blocks:
-        if b.kind in _NEVER_TRANSLATED_KINDS:
+        if b.kind in NEVER_TRANSLATED_KINDS:
             states.append(BlockState(
                 doc, lang, b.index, NOT_TRANSLATABLE,
                 detail=f"{b.kind}, never eligible for translation"))

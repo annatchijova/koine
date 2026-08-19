@@ -53,7 +53,9 @@ class Glossary:
             "glossary_version": GLOSSARY_VERSION,
             "entries": [asdict(e) for e in sorted(self.entries, key=lambda e: e.term)],
         }
-        Path(path).write_text(
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
             json.dumps(payload, sort_keys=True, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )

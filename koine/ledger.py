@@ -14,8 +14,10 @@ Appending onto a broken tail is recorded but loudly flagged, never laundered.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
+import os
 from pathlib import Path
 
 from .canonical import canonical_bytes
@@ -23,9 +25,42 @@ from .canonical import canonical_bytes
 GENESIS = "0" * 64
 TAIL_CHECK_DEPTH = 16
 
+try:  # POSIX advisory locking; absent on Windows
+    import fcntl
+except ImportError:  # pragma: no cover - platform dependent
+    fcntl = None
+
 
 class BrokenTail(Warning):
     pass
+
+
+class Unlockable(Exception):
+    """The chain could not be locked for writing, so it was not written.
+
+    Appending is read-tail-then-write. Without a lock, two concurrent writers
+    read the same tail and emit two entries claiming the same `prev_hash` —
+    a forked chain that `verify` reports as broken linkage after the fact.
+    Refusing to write beats forking the chain.
+    """
+
+
+@contextlib.contextmanager
+def _exclusive(path: Path):
+    """Hold an exclusive lock on a sidecar of *path* for the whole append."""
+    if fcntl is None:  # pragma: no cover - platform dependent
+        raise Unlockable(
+            "file locking is unavailable on this platform; koine will not "
+            "append without it — run appends from a single process"
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
 
 
 def _entry_hash(payload: dict, prev_hash: str) -> str:
@@ -56,36 +91,43 @@ class Ledger:
                meta: dict | None = None) -> dict:
         """Append one event. *seq_time* is captured once by the caller and is
         the same value stored and hashed (failure mode #2). Returns the entry.
-        """
-        tail_warning = None
-        es = self.entries()
-        if es:
-            tail = es[-TAIL_CHECK_DEPTH:]
-            report = verify(tail, allow_partial=True)
-            if not (report["linkage_ok"] and report["integrity_ok"]):
-                tail_warning = f"appending onto a broken tail: {report['issues']}"
 
-        payload = {
-            "op": op,
-            "doc": doc,
-            "lang": lang,
-            "block_index": block_index,
-            "source_hash": source_hash,
-            "translation_hash": translation_hash,
-            "seq_time": seq_time,
-            "meta": meta or {},
-        }
-        prev = es[-1]["audit_hash"] if es else GENESIS
-        entry = {
-            "seq": len(es),
-            "payload": payload,
-            "prev_hash": prev,
-            "audit_hash": _entry_hash(payload, prev),
-        }
-        if tail_warning:
-            entry["tail_warning"] = tail_warning
-        with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, sort_keys=True, ensure_ascii=False) + "\n")
+        The read-tail-and-write is held under an exclusive lock: per-language
+        chains exist so concurrent PRs do not conflict, which means concurrent
+        writers to one chain are the expected case, not the exotic one.
+        """
+        with _exclusive(self.path):
+            tail_warning = None
+            es = self.entries()
+            if es:
+                tail = es[-TAIL_CHECK_DEPTH:]
+                report = verify(tail, allow_partial=True)
+                if not (report["linkage_ok"] and report["integrity_ok"]):
+                    tail_warning = f"appending onto a broken tail: {report['issues']}"
+
+            payload = {
+                "op": op,
+                "doc": doc,
+                "lang": lang,
+                "block_index": block_index,
+                "source_hash": source_hash,
+                "translation_hash": translation_hash,
+                "seq_time": seq_time,
+                "meta": meta or {},
+            }
+            prev = es[-1]["audit_hash"] if es else GENESIS
+            entry = {
+                "seq": len(es),
+                "payload": payload,
+                "prev_hash": prev,
+                "audit_hash": _entry_hash(payload, prev),
+            }
+            if tail_warning:
+                entry["tail_warning"] = tail_warning
+            with self.path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, sort_keys=True, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
         return entry
 
 

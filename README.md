@@ -16,7 +16,10 @@ as up to date.** State is derived from hashes alone.
 
 A translation's state (`CURRENT`, `STALE`, `TAMPERED`, `MACHINE_ONLY`,
 `UNTRANSLATED`) is a pure function of content hashes and a tamper-evident
-ledger. The fleet's language models:
+ledger — including *where* each translated block lives, which is read from
+the ledger and never inferred from the source's own block numbering (a
+translation with a banner the source lacks is not index-aligned with it).
+The fleet's language models:
 
 - receive prose with protected spans (code, URLs, env vars, flags, paths)
   **frozen into placeholders** they cannot alter — restoration is verified
@@ -89,10 +92,34 @@ python3 scripts/verify_ledger.py .koine/ledger.es.jsonl   # external, stdlib-onl
 python3 scripts/torture.py path/to/any/repo           # freeze/thaw roundtrip
 
 pip install -e ".[agents]"    # the ADK fleet (needs a Gemini credential)
+python3 -m koine translate --source README.md --translation es=README.es.md
 ```
 
 Without ADK or a credential the deterministic pipeline works in full; only
 translation *generation* needs a model. The gate never does.
+
+`koine translate --dry-run` needs neither, and is the thing worth running
+before you trust a translation pass: it prints the **frozen template** of every
+pending block — the exact bytes a model would receive, protected spans already
+replaced by `⟦K0⟧`-style placeholders. If a URL or a flag is visible there, the
+freeze missed it, and you know before a model ever sees the text.
+
+Code fences and frontmatter are copied into the translated file **verbatim**,
+mechanically, with no model involved — a translated README without its code
+blocks is not a translated README.
+
+## Glossary
+
+Agents propose; humans bind. The binding is the enforceable act, so the CLI
+records who performed it and refuses to do it anonymously:
+
+```bash
+python3 -m koine glossary propose --term "ledger" --rendering es=libro --by agent:steward
+python3 -m koine glossary bind    --term "ledger" --by anna     # now gate-enforced
+python3 -m koine glossary list
+```
+
+Use `@same` as a rendering to require a term be kept verbatim in a language.
 
 ## GitHub Action
 
@@ -111,8 +138,18 @@ Built during the All Things Agentic Hackathon submission period. Deterministic
 core complete and tested. ADK fleet wiring is done end-to-end
 (`koine/agents/orchestrator.py`: watcher-selected blocks → translator →
 reviewer → mechanical submit, with model calls injectable so the cycle is
-tested without any credential); Cloud Run deployment and the GitHub webhook
-watcher are still in progress. Pre-existing work: none — see ATTRIBUTIONS.md.
+tested without any credential), and driveable from the CLI via `koine
+translate`; Cloud Run deployment and the GitHub webhook watcher are still in
+progress. Pre-existing work: none — see ATTRIBUTIONS.md.
+
+Three defects that produced a **green gate over a broken translation** are
+fixed and pinned by regression tests in `tests/test_placement.py`:
+
+| Defect | What it did | Now |
+|---|---|---|
+| Placement assumed source-index alignment | overwrote an adopted translation's code fence with prose, duplicated the stale paragraph, reported `CURRENT` | placement is read from the ledger; a collision or a missing recorded block is a mechanical rejection |
+| `freeze` applied its patterns in sequence | a later pattern swallowed an earlier placeholder (`<a href="https://x">`), so the block could never be thawed and stayed `UNTRANSLATED` forever — **2.1% of 24k real-world markdown blocks** | one non-overlapping left-to-right scan; 0 failures on the same corpus |
+| Ledger appends were unlocked | concurrent writers read the same tail and forked the chain | the read-tail-and-write is held under an exclusive lock |
 
 ## License
 
