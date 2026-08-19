@@ -417,3 +417,84 @@ def test_a_lagging_anchor_is_reported_but_is_not_truncation(tmp_path, capsys):
     assert report["ok"] and not report["truncated"] and report["anchor_lag"] == 1
     assert cli(["--koine-dir", str(tmp_path / ".koine"), "verify"]) == 0
     assert "anchor lags by 1" in capsys.readouterr().out
+
+
+# ---------- a deleted source section must not live on in the translation ----------
+
+def _sync(src, tr, ledger, seen=None):
+    """Run one pipeline cycle with a stub model; return the blocks translated."""
+    calls = []
+
+    def translate(template):
+        calls.append(template)
+        return "[es] " + template
+
+    run_cycle(source_path=str(src), translation_file=str(tr), lang="es",
+              ledger=ledger, glossary=Glossary(),
+              translate_fn=translate, review_fn=lambda s, c: NO_FINDINGS)
+    return calls
+
+
+def test_deleting_a_source_section_removes_its_translation(tmp_path):
+    """The pipeline could only add and overwrite, never remove: a section
+    deleted from the source kept being documented in every translation."""
+    src, tr = tmp_path / "R.md", tmp_path / "R.es.md"
+    ledger = Ledger(tmp_path / "led.jsonl")
+    src.write_text("Uno.\n\nDos.\n\nTres.\n", encoding="utf-8")
+    _sync(src, tr, ledger)
+    assert "[es] Dos." in tr.read_text(encoding="utf-8")
+
+    src.write_text("Uno.\n\nTres.\n", encoding="utf-8")
+    _sync(src, tr, ledger)
+
+    out = tr.read_text(encoding="utf-8")
+    assert "[es] Dos." not in out          # the removed section is gone
+    assert "[es] Uno." in out and "[es] Tres." in out
+    assert out.count("[es] Tres.") == 1    # and left no stranded duplicate
+    assert len(split_blocks(out)) == 2
+    assert all(s.state in (st.CURRENT, st.NOT_TRANSLATABLE)
+               for s in st.derive_states(src, tr, "es", ledger))
+
+
+def test_a_retirement_is_recorded_not_just_performed(tmp_path):
+    src, tr = tmp_path / "R.md", tmp_path / "R.es.md"
+    ledger = Ledger(tmp_path / "led.jsonl")
+    src.write_text("Uno.\n\nDos.\n", encoding="utf-8")
+    _sync(src, tr, ledger)
+    src.write_text("Uno.\n", encoding="utf-8")
+    _sync(src, tr, ledger)
+
+    retired = [e["payload"] for e in ledger.entries()
+               if e["payload"]["op"] == "retire"]
+    by_side = {p["meta"]["side"]: p for p in retired}
+    assert set(by_side) == {"source", "translation"}
+    # the content that was dropped stays auditable by hash...
+    assert by_side["translation"]["translation_hash"]
+    # ...and the placement the deleted block held is vacated, so a future
+    # block landing on that index is not shadowed by it
+    assert by_side["source"]["block_index"] == 1
+    assert all(p["meta"]["reason"] == "source block deleted" for p in retired)
+
+
+def test_koine_never_removes_content_it_did_not_write(tmp_path):
+    """The safety condition on deletion. A hand-added paragraph is unmapped
+    just like a stranded translation, but koine has no record of writing it,
+    so it is left alone and stays visible as UNSOURCED."""
+    src, tr = tmp_path / "R.md", tmp_path / "R.es.md"
+    ledger = Ledger(tmp_path / "led.jsonl")
+    src.write_text("Uno.\n\nDos.\n", encoding="utf-8")
+    _sync(src, tr, ledger)
+
+    tr.write_text(tr.read_text(encoding="utf-8") + "\nEscrito a mano.\n",
+                  encoding="utf-8")
+    _sync(src, tr, ledger)
+
+    assert "Escrito a mano." in tr.read_text(encoding="utf-8")
+    assert any(s.state == st.UNSOURCED
+               for s in st.derive_states(src, tr, "es", ledger))
+
+
+def test_an_adopted_orphan_survives_the_pipeline(tmp_path):
+    src, tr, ledger = _offset_repo(tmp_path)
+    _sync(src, tr, ledger)
+    assert "Nota de traduccion." in tr.read_text(encoding="utf-8")

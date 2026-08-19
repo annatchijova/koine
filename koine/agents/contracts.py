@@ -22,7 +22,9 @@ from ..blocks import Block, freeze, split_blocks, thaw, verify_protected_spans
 from ..canonical import seal_text
 from ..glossary import Glossary
 from ..ledger import Ledger
-from ..state import NEVER_TRANSLATED_KINDS, block_mapping, latest_events
+from ..state import (NEVER_TRANSLATED_KINDS, adopted_orphan_hashes,
+                     block_mapping, latest_events,
+                     recorded_translation_hashes)
 
 
 class CandidateRejected(Exception):
@@ -172,6 +174,77 @@ def mirror_untranslatable(*, source_path: str, translation_file: str, lang: str,
     if mirrored:
         _write_raws(translation_file, raws)
     return mirrored
+
+
+def retire_orphaned(*, source_path: str, translation_file: str, lang: str,
+                    ledger: Ledger) -> list[int]:
+    """Remove translations whose source block was deleted, and vacate the
+    placements those blocks left behind.
+
+    Without this the pipeline can only add and overwrite: delete a section from
+    the source and the translated file keeps documenting it forever — the exact
+    "quietly out of date" failure koine exists to prevent, and one the gate
+    reports as UNSOURCED with no way to fix it through the tool.
+
+    Deletion is the change with the least visible consequences, so removing
+    file content is fenced in: a block goes only if its content hash is one
+    koine itself recorded writing for this pair. Content koine did not write —
+    a hand-added paragraph, an adopted orphan — is never touched; it stays
+    visible as UNSOURCED or LEGACY_ORPHAN for a human to resolve. Every removal
+    is recorded as a `retire` event carrying the removed content's hash, so
+    what was dropped stays auditable.
+
+    Vacating matters as much as removing. A placement left behind by a document
+    that used to be longer keeps shadowing whatever new block later lands on
+    that index: the newcomer reads as STALE against a stranger's hash, and its
+    recorded slot points past the end of the translated file, so it can never
+    be placed and never stops being pending.
+    """
+    doc = Path(source_path).as_posix()
+    src_blocks = split_blocks(Path(source_path).read_text(encoding="utf-8"))
+    raws = _read_raws(translation_file)
+    mapping = block_mapping(ledger, doc, lang)
+    written = recorded_translation_hashes(ledger, doc, lang)
+    keep = adopted_orphan_hashes(ledger, doc, lang)
+
+    # a placement for a source index the document no longer has belongs to a
+    # deleted block: its slot is stranded, not occupied
+    dead = sorted(i for i in mapping if i >= len(src_blocks))
+    occupied = {tgt for i, tgt in mapping.items() if i < len(src_blocks)}
+    doomed = [j for j, raw in enumerate(raws)
+              if j not in occupied
+              and seal_text(raw) not in keep
+              and seal_text(raw) in written]
+    if not doomed and not dead:
+        return []
+
+    seq_time = _dt.datetime.now(_dt.timezone.utc).isoformat()
+
+    for i in dead:
+        ledger.append(
+            op="retire", doc=doc, lang=lang, block_index=i,
+            source_hash="", translation_hash="",
+            seq_time=seq_time,
+            meta={"reason": "source block deleted", "side": "source"},
+        )
+
+    for j in sorted(doomed, reverse=True):
+        removed = raws.pop(j)
+        ledger.append(
+            op="retire", doc=doc, lang=lang, block_index=j,
+            source_hash="",                      # its source block is gone
+            translation_hash=seal_text(removed),
+            seq_time=seq_time,
+            meta={"reason": "source block deleted", "side": "translation"},
+        )
+        shifted = {i: tgt - 1 for i, tgt in mapping.items()
+                   if tgt > j and i < len(src_blocks)}
+        _record_shift(ledger, doc, lang, shifted, seq_time)
+        mapping.update(shifted)
+
+    if doomed:
+        _write_raws(translation_file, raws)
+    return sorted(doomed)
 
 
 def submit_candidate(*, source_path: str, block_index: int, lang: str,

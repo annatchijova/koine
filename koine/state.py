@@ -61,20 +61,35 @@ class BlockState:
 # the translated file shifted; "mirror" records a never-translated block copied
 # verbatim. All three are placement facts, so all three are folded here.
 _PLACEMENT_OPS = ("translate", "remap", "mirror")
+# a `retire` marked side="source" says the source block at that index is gone,
+# which vacates its placement rather than restating one
+VACATE_OP = "retire"
 
 
 def latest_events(ledger: Ledger) -> dict:
-    """(doc, lang, block_index) → last placement event.
+    """(doc, lang, block_index) → the placement in force, in ledger order.
+
+    A later placement supersedes an earlier one at the same index, and a
+    `retire` vacates it. The vacating matters: without it, an entry left behind
+    by a document that used to be longer keeps shadowing whatever new block
+    later lands on that index — the new block is read as STALE against a
+    stranger's hash, and its recorded slot points past the end of the
+    translated file, so it can never be placed and never stops being pending.
 
     Entries that did not parse carry no payload; they are already reported by
     `ledger.verify`, and skipping them here keeps a damaged chain from turning
     into a traceback halfway through state derivation.
     """
-    out = {}
+    out: dict = {}
     for e in ledger.entries():
         p = e.get("payload")
-        if p and p.get("op") in _PLACEMENT_OPS:
-            out[(p["doc"], p["lang"], p["block_index"])] = e
+        if not p:
+            continue
+        key = (p["doc"], p["lang"], p["block_index"])
+        if p.get("op") in _PLACEMENT_OPS:
+            out[key] = e
+        elif p.get("op") == VACATE_OP and p.get("meta", {}).get("side") == "source":
+            out.pop(key, None)
     return out
 
 
@@ -85,6 +100,22 @@ def adopted_orphan_hashes(ledger: Ledger, doc: str, lang: str) -> set[str]:
     for e in ledger.entries():
         p = e.get("payload")
         if p and p.get("op") == "adopt_orphan" and p["doc"] == doc and p["lang"] == lang:
+            out.add(p["translation_hash"])
+    return out
+
+
+def recorded_translation_hashes(ledger: Ledger, doc: str, lang: str) -> set[str]:
+    """Every translation-block hash koine itself ever wrote for this pair.
+
+    The safety condition for removing anything: koine retires only content it
+    can prove it wrote. Anything else that no source block maps to stays
+    UNSOURCED for a human, because a deletion made on a guess is the change
+    with the least visible consequences.
+    """
+    out = set()
+    for e in ledger.entries():
+        p = e.get("payload")
+        if p and p.get("op") in _PLACEMENT_OPS and p["doc"] == doc and p["lang"] == lang:
             out.add(p["translation_hash"])
     return out
 

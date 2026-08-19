@@ -70,6 +70,11 @@ def run_cycle(*, source_path: str, translation_file: str, lang: str,
     contracts.mirror_untranslatable(
         source_path=source_path, translation_file=translation_file,
         lang=lang, ledger=ledger)
+    # then drop translations whose source block was deleted, so the translated
+    # file stops documenting sections the source no longer has
+    contracts.retire_orphaned(
+        source_path=source_path, translation_file=translation_file,
+        lang=lang, ledger=ledger)
 
     states = derive_states(source_path, translation_file, lang, ledger)
     results = []

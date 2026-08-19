@@ -137,6 +137,35 @@ Code fences and frontmatter are copied into the translated file **verbatim**,
 mechanically, with no model involved — a translated README without its code
 blocks is not a translated README.
 
+Deleting a section from the source removes its translation too, so a translated
+file stops documenting what the source no longer has. Removal is fenced in:
+koine deletes a block only if the content hash is one it recorded writing
+itself, and records a `retire` event carrying that hash. A hand-added paragraph
+or an adopted orphan is never touched — it stays visible as `UNSOURCED` or
+`LEGACY_ORPHAN` for a human to resolve.
+
+## Known limitation: block identity is positional
+
+A source block is identified by its index. Insert a paragraph near the top of a
+document and every block below it shifts, so all of them are reported `STALE`
+and re-translated, though not one word of them changed. Nothing is corrupted
+and nothing is falsely `CURRENT` — the failure is cost, plus a `STALE` detail
+line that says "source changed" when only the position did.
+
+Matching blocks by content hash instead was implemented and measured. It cut a
+one-paragraph insertion from a full-document re-translation to a single model
+call, and then failed the convergence property on **95 of 120 mutation seeds**:
+stale placements resurfaced, blocks were left permanently pending, and the
+pipeline stopped reaching a fixed point. It was reverted. Stable block identity
+across arbitrary edits is a harder problem than a hash lookup, and convergence
+is worth more than the saved calls, so the positional scheme stands until the
+identity problem is solved properly.
+
+`tests/test_convergence.py` is what settled that: it edits a document the way
+people do — insert, delete, edit, move — and after every edit asserts the
+pipeline converged, the gate agrees, the translation says what the source says
+block for block, and a second cycle changes nothing.
+
 ## Glossary
 
 Agents propose; humans bind. The binding is the enforceable act, so the CLI
@@ -171,7 +200,7 @@ tested without any credential), and driveable from the CLI via `koine
 translate`; Cloud Run deployment and the GitHub webhook watcher are still in
 progress. Pre-existing work: none — see ATTRIBUTIONS.md.
 
-Five defects that produced a **green gate over a broken translation** are
+Six defects that produced a **green gate over a broken translation** are
 fixed and pinned by regression tests in `tests/test_placement.py`. Two of them
 contradicted guarantees this README already made:
 
@@ -182,6 +211,7 @@ contradicted guarantees this README already made:
 | Ledger appends were unlocked | concurrent writers read the same tail and forked the chain | the read-tail-and-write is held under an exclusive lock |
 | Nothing looked at the translation side | appending a paragraph the source never contained edited no recorded block, so the gate printed `all translations current`, exit 0 | unmapped translation blocks are `UNSOURCED`, exit 2; orphans known at adoption stay allowed as `LEGACY_ORPHAN` |
 | Truncation was claimed but not checked | deleting the last N ledger entries left a chain that passes linkage *and* integrity — the README promised exit 2 and delivered exit 0 | each chain keeps an anchor of its expected head and length; unanchored chains say so instead of reporting a bare `VERIFIED` |
+| The pipeline could only add and overwrite | a section deleted from the source kept being documented in every translation, forever, and no koine command could clear it | its translation is retired and the placement it held is vacated, both recorded; koine removes only content it can prove it wrote |
 
 ## License
 
