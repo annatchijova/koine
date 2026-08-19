@@ -12,6 +12,12 @@ For each (doc, lang, block) the state is derived from hashes alone:
   MACHINE_ONLY  same as CURRENT but the event was flagged unreviewed —
                 surfaced honestly to readers, never hidden
 
+Two more states describe blocks on the *translation* side, which the loop
+over source blocks structurally cannot see: a translated file can grow
+content the source never had, and appending to it edits no recorded block,
+so nothing above fires. UNSOURCED is that content; LEGACY_ORPHAN is the
+subset of it that already existed when the pair was adopted.
+
 A language model may *cause* these states to change by producing candidate
 translations; it can never *declare* a state. That is the whole point.
 """
@@ -31,9 +37,11 @@ UNTRANSLATED = "UNTRANSLATED"
 MACHINE_ONLY = "MACHINE_ONLY"
 LEGACY_UNVERIFIED = "LEGACY_UNVERIFIED"
 NOT_TRANSLATABLE = "NOT_TRANSLATABLE"
+UNSOURCED = "UNSOURCED"
+LEGACY_ORPHAN = "LEGACY_ORPHAN"
 
 # block kinds that are never eligible for translation (see blocks.split_blocks)
-_NEVER_TRANSLATED_KINDS = ("fence", "frontmatter")
+NEVER_TRANSLATED_KINDS = ("fence", "frontmatter")
 
 
 @dataclass
@@ -43,15 +51,89 @@ class BlockState:
     block_index: int
     state: str
     detail: str = ""
+    # which file block_index refers to. UNSOURCED/LEGACY_ORPHAN are indices
+    # into the translated file; every other state indexes the source.
+    side: str = "source"
+
+
+# ops that carry a (source block → translation block) placement. "translate"
+# records a new translation; "remap" restates an existing one whose position in
+# the translated file shifted; "mirror" records a never-translated block copied
+# verbatim. All three are placement facts, so all three are folded here.
+_PLACEMENT_OPS = ("translate", "remap", "mirror")
+# a `retire` marked side="source" says the source block at that index is gone,
+# which vacates its placement rather than restating one
+VACATE_OP = "retire"
 
 
 def latest_events(ledger: Ledger) -> dict:
-    """(doc, lang, block_index) → last 'translate' event."""
-    out = {}
+    """(doc, lang, block_index) → the placement in force, in ledger order.
+
+    A later placement supersedes an earlier one at the same index, and a
+    `retire` vacates it. The vacating matters: without it, an entry left behind
+    by a document that used to be longer keeps shadowing whatever new block
+    later lands on that index — the new block is read as STALE against a
+    stranger's hash, and its recorded slot points past the end of the
+    translated file, so it can never be placed and never stops being pending.
+
+    Entries that did not parse carry no payload; they are already reported by
+    `ledger.verify`, and skipping them here keeps a damaged chain from turning
+    into a traceback halfway through state derivation.
+    """
+    out: dict = {}
     for e in ledger.entries():
-        p = e["payload"]
-        if p["op"] == "translate":
-            out[(p["doc"], p["lang"], p["block_index"])] = e
+        p = e.get("payload")
+        if not p:
+            continue
+        key = (p["doc"], p["lang"], p["block_index"])
+        if p.get("op") in _PLACEMENT_OPS:
+            out[key] = e
+        elif p.get("op") == VACATE_OP and p.get("meta", {}).get("side") == "source":
+            out.pop(key, None)
+    return out
+
+
+def adopted_orphan_hashes(ledger: Ledger, doc: str, lang: str) -> set[str]:
+    """Content hashes of translation blocks that had no source counterpart
+    when the pair was adopted — the orphans koine already knew about."""
+    out = set()
+    for e in ledger.entries():
+        p = e.get("payload")
+        if p and p.get("op") == "adopt_orphan" and p["doc"] == doc and p["lang"] == lang:
+            out.add(p["translation_hash"])
+    return out
+
+
+def recorded_translation_hashes(ledger: Ledger, doc: str, lang: str) -> set[str]:
+    """Every translation-block hash koine itself ever wrote for this pair.
+
+    The safety condition for removing anything: koine retires only content it
+    can prove it wrote. Anything else that no source block maps to stays
+    UNSOURCED for a human, because a deletion made on a guess is the change
+    with the least visible consequences.
+    """
+    out = set()
+    for e in ledger.entries():
+        p = e.get("payload")
+        if p and p.get("op") in _PLACEMENT_OPS and p["doc"] == doc and p["lang"] == lang:
+            out.add(p["translation_hash"])
+    return out
+
+
+def block_mapping(ledger: Ledger, doc: str, lang: str) -> dict[int, int]:
+    """source block index → translation block index, for one (doc, lang).
+
+    The translated file is *not* required to be index-aligned with the source:
+    an adopted translation may carry a banner the source lacks, or omit a
+    section. Writing a new translation at the source's own index would then
+    silently overwrite an unrelated block — so placement is read from the
+    ledger, never assumed.
+    """
+    out: dict[int, int] = {}
+    for (d, l, idx), e in latest_events(ledger).items():
+        if d == doc and l == lang:
+            meta = e["payload"].get("meta", {})
+            out[idx] = meta.get("translation_block_index", idx)
     return out
 
 
@@ -70,7 +152,7 @@ def derive_states(source_path: str | Path, translation_path: str | Path,
 
     states: list[BlockState] = []
     for b in src_blocks:
-        if b.kind in _NEVER_TRANSLATED_KINDS:
+        if b.kind in NEVER_TRANSLATED_KINDS:
             states.append(BlockState(
                 doc, lang, b.index, NOT_TRANSLATABLE,
                 detail=f"{b.kind}, never eligible for translation"))
@@ -108,4 +190,41 @@ def derive_states(source_path: str | Path, translation_path: str | Path,
             states.append(BlockState(doc, lang, b.index, MACHINE_ONLY))
         else:
             states.append(BlockState(doc, lang, b.index, CURRENT))
+
+    states.extend(_unsourced_states(doc, lang, tr_blocks, ledger))
     return states
+
+
+def _unsourced_states(doc: str, lang: str, tr_blocks: list, ledger: Ledger
+                      ) -> list[BlockState]:
+    """Translation blocks that no source block is mapped to.
+
+    The source-block loop can only report on content the source has. Content
+    *appended* to a translated file edits no recorded block, so every check
+    above passes and the gate goes green over a paragraph the source never
+    said. This is the pass that sees it.
+
+    Silence has one honest precondition: koine must already have records for
+    this pair. With no placement events at all — a translation that was never
+    adopted or translated — koine knows nothing about the file and calling its
+    contents unsourced would be a claim it cannot back.
+    """
+    mapped = set(block_mapping(ledger, doc, lang).values())
+    if not mapped:
+        return []
+
+    known_orphans = adopted_orphan_hashes(ledger, doc, lang)
+    out: list[BlockState] = []
+    for tb in tr_blocks:
+        if tb.index in mapped:
+            continue
+        if seal_text(tb.raw) in known_orphans:
+            out.append(BlockState(
+                doc, lang, tb.index, LEGACY_ORPHAN, side="translation",
+                detail="orphan present at adoption; no source counterpart"))
+        else:
+            out.append(BlockState(
+                doc, lang, tb.index, UNSOURCED, side="translation",
+                detail="no source block maps to it, and it is not an orphan "
+                       "recorded at adoption — added or edited afterwards"))
+    return out

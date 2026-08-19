@@ -1,9 +1,11 @@
 """koine CLI.
 
-    koine adopt  --source README.md --translation es=README.es.md [ru=...]
-    koine status --source README.md --translation es=README.es.md
-    koine gate   --source README.md --translation es=README.es.md [--forbid-machine-only]
+    koine adopt     --source README.md --translation es=README.es.md [ru=...]
+    koine status    --source README.md --translation es=README.es.md
+    koine translate --source README.md --translation es=README.es.md [--dry-run]
+    koine gate      --source README.md --translation es=README.es.md [--forbid-machine-only]
     koine verify                       # every chain in .koine/
+    koine glossary  list | propose | bind
 
 All subcommands take --koine-dir (default .koine). Exit codes follow the
 gate convention: 0 clean, 1 drift, 2 integrity failure.
@@ -17,8 +19,8 @@ from pathlib import Path
 from . import state as st
 from .adopt import adopt
 from .gate import run_gate
-from .glossary import Glossary
-from .ledger import verify
+from .glossary import KEEP_VERBATIM, Glossary
+from .ledger import verify_chain
 from .store import Store
 
 
@@ -56,8 +58,106 @@ def cmd_status(args) -> int:
         print(f"[{lang}] {summary}")
         for s in states:
             if s.state not in (st.CURRENT, st.NOT_TRANSLATABLE):
-                print(f"    block {s.block_index}: {s.state}"
+                where = "translation block" if s.side == "translation" else "block"
+                print(f"    {where} {s.block_index}: {s.state}"
                       + (f" — {s.detail}" if s.detail else ""))
+    return 0
+
+
+def cmd_translate(args) -> int:
+    """Run the fleet over every pending block, or show what it would be sent.
+
+    --dry-run needs no credential and no ADK: it mirrors the never-translated
+    blocks, then prints the frozen template of each pending block — exactly
+    the bytes a model would receive, protected spans already replaced. That is
+    the thing worth inspecting before trusting a translation run.
+    """
+    from .agents import contracts
+    from .agents.orchestrator import run_with_adk
+
+    store = Store(args.koine_dir)
+    glossary = Glossary.load(store.glossary_path())
+    worst = 0
+
+    for lang, path in sorted(_parse_translations(args.translation).items()):
+        ledger = store.ledger(lang)
+        try:
+            mirrored = contracts.mirror_untranslatable(
+                source_path=args.source, translation_file=path, lang=lang,
+                ledger=ledger)
+        except contracts.CandidateRejected as e:
+            # the translated file no longer matches what the ledger records;
+            # writing into it would compound the damage
+            print(f"[{lang}] {e}")
+            worst = max(worst, 2)
+            continue
+        if mirrored:
+            print(f"[{lang}] mirrored {len(mirrored)} never-translated "
+                  f"blocks verbatim (indices {mirrored})")
+
+        if args.dry_run:
+            pending = [s for s in st.derive_states(args.source, path, lang, ledger)
+                       if s.state in (st.UNTRANSLATED, st.STALE)]
+            print(f"[{lang}] {len(pending)} blocks pending")
+            for s in pending:
+                prep = contracts.prepare_block(args.source, s.block_index)
+                print(f"  --- block {s.block_index} ({s.state}) ---")
+                print("  " + prep["template"].replace("\n", "\n  "))
+            worst = max(worst, 1 if pending else 0)
+            continue
+
+        try:
+            results = run_with_adk(
+                source_path=args.source, translation_file=path, lang=lang,
+                source_lang=args.source_lang, ledger=ledger, glossary=glossary,
+                model=args.model)
+        except RuntimeError as e:  # ADK or credential missing — say so plainly
+            print(f"[{lang}] {e}")
+            return 1
+
+        for r in results:
+            print(f"  block {r.block_index}: {r.outcome}"
+                  + (f" — {r.detail}" if r.detail else ""))
+        promoted = sum(1 for r in results if r.outcome == "promoted")
+        print(f"[{lang}] {promoted}/{len(results)} promoted")
+        if promoted != len(results):
+            worst = max(worst, 1)
+    return worst
+
+
+def cmd_glossary(args) -> int:
+    """list / propose / bind. Binding is a human act and is recorded as one."""
+    store = Store(args.koine_dir)
+    path = store.glossary_path()
+    glossary = Glossary.load(path)
+
+    if args.action == "list":
+        if not glossary.entries:
+            print("glossary empty")
+            return 0
+        for e in sorted(glossary.entries, key=lambda e: e.term):
+            renders = ", ".join(f"{k}={v}" for k, v in sorted(e.renderings.items()))
+            print(f"{e.status:8} {e.term!r} -> {renders}"
+                  + (f"  [{e.decided_by}]" if e.decided_by else ""))
+        return 0
+
+    if args.action == "propose":
+        renderings = _parse_translations(args.rendering)
+        glossary.propose(args.term, renderings, by=args.by)
+        glossary.save(path)
+        print(f"proposed {args.term!r}; only a human binding makes it enforced "
+              f"— run: koine glossary bind --term {args.term!r} --by <name>")
+        return 0
+
+    # bind
+    try:
+        glossary.bind(args.term, by=args.by)
+    except KeyError:
+        print(f"no glossary entry for {args.term!r}; propose it first")
+        return 1
+    glossary.save(path)
+    print(f"bound {args.term!r} by {args.by}; the gate now enforces it "
+          f"({KEEP_VERBATIM} means keep the source term verbatim)")
     return 0
 
 
@@ -84,12 +184,24 @@ def cmd_verify(args) -> int:
         return 0
     worst = 0
     for lang in langs:
-        report = verify(store.ledger(lang).entries())
-        ok = report["linkage_ok"] and report["integrity_ok"]
-        print(f"[{lang}] {'VERIFIED' if ok else 'BROKEN'}")
+        report = verify_chain(store.ledger(lang))
+        if report["ok"]:
+            # never a bare VERIFIED while something is off: an unanchored chain
+            # is intact but its tail could have been truncated without leaving a
+            # trace, and a lagging anchor means a write did not finish
+            if not report["anchored"]:
+                status = "VERIFIED (unanchored: truncation undetectable)"
+            elif report["anchor_lag"]:
+                status = (f"VERIFIED (anchor lags by {report['anchor_lag']}; "
+                          f"the next append re-anchors)")
+            else:
+                status = "VERIFIED"
+        else:
+            status = "TRUNCATED" if report["truncated"] else "BROKEN"
+        print(f"[{lang}] {status} — {report['entries']} entries")
         for issue in report["issues"]:
             print(f"    - {issue}")
-        if not ok:
+        if not report["ok"]:
             worst = 2
     return worst
 
@@ -99,20 +211,39 @@ def main(argv=None) -> int:
     ap.add_argument("--koine-dir", default=".koine")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    for name, needs_docs in (("adopt", True), ("status", True),
-                             ("gate", True), ("verify", False)):
+    for name in ("adopt", "status", "translate", "gate", "verify"):
         p = sub.add_parser(name)
-        if needs_docs:
+        if name != "verify":
             p.add_argument("--source", required=True)
             p.add_argument("--translation", action="append", required=True,
                            help="lang=path, repeatable")
         if name == "gate":
             p.add_argument("--forbid-machine-only", action="store_true")
             p.add_argument("--forbid-legacy", action="store_true")
+        if name == "translate":
+            p.add_argument("--source-lang", default="en")
+            p.add_argument("--model", default="gemini-3.5-flash")
+            p.add_argument("--dry-run", action="store_true",
+                           help="show the frozen templates instead of calling a model")
+
+    g = sub.add_parser("glossary")
+    g.add_argument("action", choices=["list", "propose", "bind"])
+    g.add_argument("--term")
+    g.add_argument("--rendering", action="append", default=[],
+                   help=f"lang=rendering, repeatable ({KEEP_VERBATIM} = keep verbatim)")
+    g.add_argument("--by", default="", help="who is proposing or binding")
 
     args = ap.parse_args(argv)
-    return {"adopt": cmd_adopt, "status": cmd_status,
-            "gate": cmd_gate, "verify": cmd_verify}[args.cmd](args)
+    if args.cmd == "glossary":
+        if args.action in ("propose", "bind") and not args.term:
+            ap.error(f"glossary {args.action} needs --term")
+        if args.action == "bind" and not args.by:
+            ap.error("glossary bind needs --by: binding is a human decision "
+                     "and the glossary records who made it")
+
+    return {"adopt": cmd_adopt, "status": cmd_status, "translate": cmd_translate,
+            "gate": cmd_gate, "verify": cmd_verify,
+            "glossary": cmd_glossary}[args.cmd](args)
 
 
 if __name__ == "__main__":

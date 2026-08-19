@@ -44,7 +44,7 @@ def test_clean_run_promotes_every_non_fence_block(tmp_path):
     assert states[2].state == st.NOT_TRANSLATABLE
 
 
-def test_reviewer_rejection_blocks_promotion_and_touches_no_ledger_entry(tmp_path):
+def test_reviewer_rejection_blocks_promotion_and_writes_no_translate_event(tmp_path):
     src, tr, led = _setup_repo(tmp_path)
     results = run_cycle(
         source_path=str(src), translation_file=str(tr), lang="es",
@@ -53,7 +53,8 @@ def test_reviewer_rejection_blocks_promotion_and_touches_no_ledger_entry(tmp_pat
         review_fn=lambda s, c: "REJECT: negation dropped",
     )
     assert results and all(r.outcome == "rejected" for r in results)
-    assert list(led.entries()) == []
+    # verbatim mirroring of fences may have run; no *translation* was promoted
+    assert [e["payload"]["op"] for e in led.entries()] == ["mirror"]
 
     states = st.derive_states(src, tr, "es", led)
     assert states[0].state == st.UNTRANSLATED

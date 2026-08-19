@@ -12,7 +12,12 @@ what can be established mechanically and nothing more:
   distinct from CURRENT, because nobody has verified the meaning matches.
 - Unaligned source blocks stay UNTRANSLATED. Unaligned translation blocks
   are reported as orphans (content in the translation with no source
-  counterpart — often deleted sections that were never removed).
+  counterpart — often deleted sections that were never removed) and each is
+  recorded in the ledger *by content hash*. That recording is what lets the
+  gate later tell a pre-existing orphan (known at adoption, allowed) from
+  content appended to the translation afterwards (UNSOURCED, blocked). Hash
+  identity, not index identity: an orphan that moves is still the same
+  orphan, and an orphan that is edited is no longer the one that was adopted.
 - From adoption onward, any change flows through the normal pipeline: a
   source edit turns the pair STALE; re-translating through the pipeline
   (or a human marking a pair reviewed) upgrades it out of legacy.
@@ -71,7 +76,22 @@ def adopt(source_path: str | Path, translation_path: str | Path, lang: str,
     for i, j in pairs:
         b = src_blocks[i]
         if b.kind in ("fence", "frontmatter"):
-            # never translated; nothing to adopt
+            # Never translated, so there is no meaning to adopt — but the
+            # alignment itself is a placement fact, and dropping it would
+            # leave the translation's fence mapped from nothing and reported
+            # as UNSOURCED content. The hash recorded is the translation's
+            # own: an adopted fence may legitimately differ from the source.
+            ledger.append(
+                op="mirror",
+                doc=doc,
+                lang=lang,
+                block_index=i,
+                source_hash=b.source_hash,
+                translation_hash=seal_text(tr_blocks[j].raw),
+                seq_time=seq_time,
+                meta={"kind": b.kind, "legacy": True,
+                      "translation_block_index": j},
+            )
             continue
         ledger.append(
             op="translate",
@@ -85,6 +105,19 @@ def adopt(source_path: str | Path, translation_path: str | Path, lang: str,
                   "translation_block_index": j},
         )
 
+    orphans = [j for j in range(len(tr_blocks)) if j not in paired_tr]
+    for j in orphans:
+        ledger.append(
+            op="adopt_orphan",
+            doc=doc,
+            lang=lang,
+            block_index=j,          # translation-side index, informational only
+            source_hash="",         # an orphan has no source block, by definition
+            translation_hash=seal_text(tr_blocks[j].raw),
+            seq_time=seq_time,
+            meta={"kind": tr_blocks[j].kind, "side": "translation"},
+        )
+
     return AdoptReport(
         doc=doc,
         lang=lang,
@@ -92,5 +125,5 @@ def adopt(source_path: str | Path, translation_path: str | Path, lang: str,
                     if src_blocks[i].kind not in ("fence", "frontmatter")),
         untranslated=len([b for k, b in enumerate(src_blocks)
                           if k not in paired_src]),
-        orphans=[j for j in range(len(tr_blocks)) if j not in paired_tr],
+        orphans=orphans,
     )

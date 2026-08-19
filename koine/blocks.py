@@ -103,15 +103,38 @@ def split_blocks(markdown: str) -> list[Block]:
 
 
 def freeze(text: str) -> FrozenText:
-    """Replace protected spans with placeholders. Deterministic, no model."""
+    """Replace protected spans with placeholders. Deterministic, no model.
+
+    One left-to-right scan over the *original* text, taking the earliest match
+    among all patterns and, on a tie, the longest. Applying the patterns one
+    after another over already-substituted text instead would let a later
+    pattern swallow an earlier placeholder — `<a href="https://x">` freezes the
+    URL first, then the HTML-tag pattern eats the whole tag including the
+    placeholder, and the template can never be thawed. Scanning once cannot
+    produce overlapping spans, and numbers the placeholders in reading order.
+    """
     spans: list[str] = []
-    out = text
-    for pattern in _PROTECTED_PATTERNS:
-        def _sub(m, _spans=spans):
-            _spans.append(m.group(0))
-            return PLACEHOLDER.format(n=len(_spans) - 1)
-        out = pattern.sub(_sub, out)
-    return FrozenText(template=out, spans=spans)
+    out: list[str] = []
+    pos = 0
+    while pos < len(text):
+        best: tuple[int, int] | None = None
+        for pattern in _PROTECTED_PATTERNS:
+            m = pattern.search(text, pos)
+            if m is None:
+                continue
+            # earliest start wins; on a tie the longer span wins; on a full
+            # tie the earlier pattern keeps it (loop order)
+            if best is None or m.start() < best[0] or (
+                    m.start() == best[0] and m.end() > best[1]):
+                best = (m.start(), m.end())
+        if best is None:
+            out.append(text[pos:])
+            break
+        out.append(text[pos:best[0]])
+        spans.append(text[best[0]:best[1]])
+        out.append(PLACEHOLDER.format(n=len(spans) - 1))
+        pos = best[1]
+    return FrozenText(template="".join(out), spans=spans)
 
 
 def thaw(frozen: FrozenText, translated_template: str) -> str:
