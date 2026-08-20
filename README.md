@@ -225,7 +225,7 @@ python3 -m koine.webhook --source README.md \
   --repo-root /path/to/checked-out/repo --port 8080
 ```
 
-`GET /healthz` for liveness. `POST /webhook` accepts a GitHub `push` event,
+`GET /livez` (or `/healthz` off Cloud Run) for liveness. `POST /webhook` accepts a GitHub `push` event,
 verifies its signature, and returns the mechanically-derived work queue
 (which docs/languages/blocks are `STALE` or `UNTRANSLATED`) for any changed
 doc — it never runs a model or writes to the ledger itself.
@@ -288,7 +288,8 @@ gcloud run deploy koine-gate \
 ```
 
 `--source .` builds the `Dockerfile`; the default serves the demo store, so the
-hosted URL works immediately (`/` dashboard, `/healthz` liveness). To watch a
+hosted URL works immediately (`/` dashboard, `/livez` liveness — the Google
+Front End reserves `/healthz`, so koine also serves `/livez`). To watch a
 real repo, set the secret and override the container args:
 
 ```bash

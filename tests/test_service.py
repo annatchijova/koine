@@ -69,6 +69,11 @@ def test_get_routes_serve_dashboard(tmp_path):
     snap = json.loads(body)
     assert snap["docs"][0]["langs"]
 
+    # /livez must answer behind the Google Front End, which reserves /healthz
+    cap, body = _drive(handler_cls, "GET", "/livez")
+    assert cap["code"] == 200
+    assert json.loads(body) == {"status": "ok"}
+
 
 def test_post_webhook_valid_push_returns_queue(tmp_path):
     configs = build_demo(tmp_path)

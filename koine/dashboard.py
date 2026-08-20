@@ -182,7 +182,10 @@ class DashboardRequestHandler(http.server.BaseHTTPRequestHandler):
             snap = build_snapshot(self.configs, self.repo_root)
             self._respond(200, json.dumps(snap).encode("utf-8"),
                           "application/json")
-        elif self.path == "/healthz":
+        elif self.path in ("/healthz", "/livez"):
+            # /livez is the Cloud Run health path: the Google Front End reserves
+            # the exact path /healthz and never forwards it to the container, so
+            # /healthz works everywhere except behind GFE. Both answer here.
             self._respond(200, json.dumps({"status": "ok"}).encode("utf-8"),
                           "application/json")
         else:

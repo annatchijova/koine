@@ -135,7 +135,10 @@ class WebhookRequestHandler(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        if self.path == "/healthz":
+        # /livez mirrors /healthz: the Google Front End reserves the exact path
+        # /healthz on Cloud Run and never forwards it, so /livez is the health
+        # path that works behind GFE. Both answer 200 here.
+        if self.path in ("/healthz", "/livez"):
             self._respond(200, {"status": "ok"})
         else:
             self._respond(404, {"error": "not found"})

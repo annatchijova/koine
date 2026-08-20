@@ -166,5 +166,10 @@ def test_http_serves_page_and_snapshot(tmp_path):
     assert cap["code"] == 200
     assert json.loads(body) == {"status": "ok"}
 
+    # /livez is the Cloud Run health path (GFE reserves /healthz)
+    cap, body = _get(handler_cls, "/livez")
+    assert cap["code"] == 200
+    assert json.loads(body) == {"status": "ok"}
+
     cap, body = _get(handler_cls, "/nope")
     assert cap["code"] == 404
