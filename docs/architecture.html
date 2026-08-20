@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>koine — system architecture</title>
+<meta name="description" content="koine architecture: an ADK/Gemini translation fleet that proposes, a deterministic core that decides and seals, on Google Cloud Run.">
+<style>
+  :root{
+    --cy:#22d3ee; --in:#6366f1; --deep:#4f46e5;
+    --ink:#e7edf7; --md:#9aa8bf; --line:rgba(255,255,255,.14);
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{min-height:100vh;font-family:var(--sans);color:var(--ink);line-height:1.5;-webkit-font-smoothing:antialiased;
+    background:
+      radial-gradient(1100px 640px at 8% -8%, rgba(99,102,241,.30), transparent 60%),
+      radial-gradient(900px 560px at 100% 4%, rgba(34,211,238,.16), transparent 58%),
+      radial-gradient(760px 520px at 60% 118%, rgba(79,70,229,.18), transparent 60%),
+      linear-gradient(160deg,#070a12 0%,#0b1327 55%,#140f34 100%);
+    background-attachment:fixed;}
+  a{color:var(--cy);text-decoration:none}
+  .wrap{max-width:940px;margin:0 auto;padding:26px}
+  header.top{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:6px 0 2px}
+  .brand{display:flex;align-items:center;gap:11px}
+  .brand svg{width:30px;height:30px}
+  .brand b{font-size:20px;font-weight:800;letter-spacing:.22em;
+    background:linear-gradient(135deg,var(--cy),var(--in));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .kick{font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.2em;color:var(--cy);text-transform:uppercase}
+  .lead{color:var(--md);font-size:15px;max-width:70ch;margin:16px 0 8px;line-height:1.55}
+  .lead b{color:var(--ink);font-weight:700}
+
+  .flow{display:flex;flex-direction:column;align-items:center;gap:8px;margin:18px 0 8px}
+  .band{width:100%;border-radius:16px;padding:16px;border:1px solid var(--line);
+    background:rgba(255,255,255,.035)}
+  .band.sub{border-style:dashed;border-color:rgba(34,211,238,.32);background:rgba(34,211,238,.03)}
+  .band.model{border-color:rgba(99,102,241,.4);background:rgba(99,102,241,.06)}
+  .band .label{font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--md);margin-bottom:12px;display:flex;align-items:center;gap:10px}
+  .band .label::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,rgba(34,211,238,.35),transparent)}
+  .band .label .tag{border:1px solid var(--line);border-radius:999px;padding:2px 9px;color:var(--cy);letter-spacing:.08em}
+  .nodes{display:flex;gap:12px;flex-wrap:wrap;justify-content:center}
+  .node{flex:1 1 200px;min-width:180px;max-width:300px;background:rgba(255,255,255,.05);
+    border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:14px 16px;
+    transition:transform .12s ease,border-color .12s ease}
+  .node:hover{transform:translateY(-2px);border-color:rgba(34,211,238,.45)}
+  .node .t{font-size:15px;font-weight:800;letter-spacing:-.01em}
+  .node .s{font-family:var(--mono);font-size:11px;color:var(--md);margin-top:5px;line-height:1.5}
+  .node.model{border-color:rgba(99,102,241,.45);background:rgba(99,102,241,.09)}
+  .node.model .badge{font-family:var(--mono);font-size:10px;color:#a9b2ff;letter-spacing:.06em}
+  .node.seal{border-color:rgba(34,211,238,.55);background:linear-gradient(150deg,rgba(34,211,238,.12),rgba(99,102,241,.10))}
+  .node.db{border-radius:999px;text-align:center;border-color:rgba(34,211,238,.4);background:rgba(11,19,39,.6)}
+  .conn{color:var(--cy);font-size:20px;line-height:1;opacity:.85}
+  .conn small{display:block;font-family:var(--mono);font-size:10px;color:var(--md);letter-spacing:.06em;
+    text-align:center;margin-top:2px;opacity:.9}
+
+  .boundary{width:100%;display:flex;align-items:center;gap:14px;margin:4px 0}
+  .boundary .rule{flex:1;height:0;border-top:1px dashed rgba(34,211,238,.5)}
+  .boundary .txt{font-family:var(--mono);font-size:11px;letter-spacing:.08em;color:var(--cy);
+    text-align:center;white-space:nowrap}
+  .boundary .txt span{color:var(--md)}
+
+  .principle{margin:18px 0 6px;padding:16px 18px;border-radius:14px;
+    border:1px solid rgba(34,211,238,.28);background:rgba(34,211,238,.05)}
+  .principle h3{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--cy);margin-bottom:8px}
+  .principle p{font-size:14px;color:#c7d2e4;line-height:1.55}
+  .principle p + p{margin-top:8px}
+
+  .legend{display:flex;flex-wrap:wrap;gap:10px;margin:16px 0}
+  .chip{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11px;color:var(--md);
+    border:1px solid var(--line);border-radius:999px;padding:5px 11px}
+  .sw{width:11px;height:11px;border-radius:3px}
+  .sw.det{background:rgba(34,211,238,.5)} .sw.mod{background:rgba(99,102,241,.6)}
+  .sw.seal{background:linear-gradient(135deg,var(--cy),var(--in))}
+
+  footer{padding:26px 0 40px;text-align:center;font-family:var(--mono);font-size:12px;color:#66748f;letter-spacing:.06em}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<svg style="position:absolute;width:0;height:0" aria-hidden="true"><defs>
+  <linearGradient id="kg" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#6366f1"/>
+  </linearGradient>
+</defs></svg>
+
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <svg viewBox="0 0 40 40" fill="none" aria-hidden="true">
+        <rect x="9" y="9" width="22" height="22" rx="6" transform="rotate(45 20 20)" stroke="url(#kg)" stroke-width="2.5"/>
+        <circle cx="20" cy="20" r="4.4" fill="url(#kg)"/>
+      </svg>
+      <b>KOINE</b>
+      <span class="kick">system architecture</span>
+    </div>
+  </header>
+
+  <p class="lead">A GitHub push becomes a mechanically-derived translation queue.
+  A <b>Gemini</b> fleet on <b>Google ADK</b> proposes candidates; a deterministic
+  core re-checks and <b>seals</b> each one into a per-language hash chain. The
+  model is never on the decision path — swap the backend and the wording changes,
+  never a verdict. Everything runs on <b>Google Cloud Run</b>.</p>
+
+  <div class="legend">
+    <span class="chip"><span class="sw det"></span>deterministic core — decides &amp; seals</span>
+    <span class="chip"><span class="sw mod"></span>model layer — proposes only</span>
+    <span class="chip"><span class="sw seal"></span>sealed source of truth</span>
+  </div>
+
+  <div class="flow">
+
+    <div class="nodes">
+      <div class="node"><div class="t">GitHub push</div>
+        <div class="s">added / modified / removed paths</div></div>
+    </div>
+    <div class="conn">&#8595;<small>X-Hub-Signature-256</small></div>
+
+    <div class="band sub">
+      <div class="label">Cloud Run service &middot; koine-gate <span class="tag">stdlib, no credential</span></div>
+      <div class="nodes">
+        <div class="node"><div class="t">webhook watcher</div>
+          <div class="s">HMAC-SHA256 verify<br>fail-closed</div></div>
+        <div class="node"><div class="t">work queue</div>
+          <div class="s">state.derive_states<br>STALE / UNTRANSLATED</div></div>
+        <div class="node"><div class="t">dashboard</div>
+          <div class="s">read-only view<br>paints sealed state</div></div>
+      </div>
+    </div>
+
+    <div class="boundary">
+      <div class="rule"></div>
+      <div class="txt">DECISION BOUNDARY&nbsp;&nbsp;<span>model may propose below &middot; only the core seals above</span></div>
+      <div class="rule"></div>
+    </div>
+
+    <div class="band model">
+      <div class="label">Cloud Run Job &middot; koine-fleet <span class="tag">ADK + Gemini 3.5</span></div>
+      <div class="nodes">
+        <div class="node model"><div class="t">translator</div>
+          <div class="s">frozen template in,<br>translated template out</div>
+          <div class="badge">Gemini &middot; proposes</div></div>
+        <div class="node model"><div class="t">reviewer</div>
+          <div class="s">adversarial read;<br>can only REJECT</div>
+          <div class="badge">Gemini &middot; never approves</div></div>
+      </div>
+    </div>
+    <div class="conn">&#8595;<small>candidate template</small></div>
+
+    <div class="nodes">
+      <div class="node seal"><div class="t">mechanical submit</div>
+        <div class="s">placeholders restored &amp; verified, glossary honored,
+        placement read from ledger — then, and only then, sealed</div></div>
+    </div>
+    <div class="conn">&#8595;<small>sha256(canonical payload + prev_hash)</small></div>
+
+    <div class="nodes">
+      <div class="node db"><div class="t">per-language ledger</div>
+        <div class="s">append-only SHA-256 hash chain + anchor sidecar<br>(travels in git, verifiable with the stdlib)</div></div>
+    </div>
+    <div class="conn">&#8595;<small>read-only</small></div>
+
+    <div class="nodes">
+      <div class="node"><div class="t">dashboard</div>
+        <div class="s">status matrix &middot; chain of custody &middot; work queue</div></div>
+      <div class="node"><div class="t">CI gate</div>
+        <div class="s">exit 0 current &middot; 1 drift &middot; 2 tampered/broken</div></div>
+    </div>
+
+  </div>
+
+  <div class="principle">
+    <h3>Why the model sits off the decision path</h3>
+    <p>A language model can read the evidence correctly and still reach the wrong
+    conclusion under narrative pressure. So the deterministic engine derives every
+    block's state from hashes alone and seals it <em>before</em> any wording is
+    produced. The fleet's translator and reviewer only produce candidates; the
+    reviewer cannot even approve — promotion is a mechanical re-check.</p>
+    <p>The test of the boundary: swapping the model backend (or removing it
+    entirely) changes translations that get proposed, never a sealed verdict, a
+    ledger hash, or the gate's exit code. That is the property the dashboard and
+    the CI gate both rely on when they read the same chain.</p>
+  </div>
+
+  <footer>koine &middot; deterministic translation gate &middot; ADK + Gemini on Google Cloud Run</footer>
+</div>
+</body>
+</html>

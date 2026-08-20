@@ -268,6 +268,9 @@ flowchart LR
   ledger --> cigate[CI gate<br/>exit 0 / 1 / 2]
 ```
 
+A rendered, browsable version of this diagram is in
+[`docs/architecture.html`](docs/architecture.html).
+
 The model lives inside the fleet, which only *proposes*: every candidate is
 re-checked mechanically before `submit_candidate` seals it into the ledger, so
 Gemini can never declare a block current. The dashboard and the CI gate read
@@ -309,6 +312,15 @@ gcloud run jobs deploy koine-fleet --image gcr.io/$PROJECT/koine-fleet \
   --region us-central1 --set-env-vars GOOGLE_API_KEY=$GEMINI_KEY \
   --args translate,--source,README.md,--translation,es=README.es.md
 gcloud run jobs execute koine-fleet --region us-central1
+```
+
+For a CI-driven deploy, `cloudbuild.yaml` builds the gate image, pushes it to
+Artifact Registry, and deploys the Cloud Run service in one step (see its
+header for the one-time repo setup and how to wire a push-to-main trigger):
+
+```bash
+gcloud builds submit --config cloudbuild.yaml \
+  --substitutions=_REGION=us-central1,_SERVICE=koine-gate,_REPO=koine
 ```
 
 ## License

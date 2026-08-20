@@ -1,0 +1,63 @@
+# Cloud Build -> Cloud Run for the koine gate service (dashboard + webhook).
+#
+# Run manually:
+#   gcloud builds submit --config cloudbuild.yaml \
+#     --substitutions=_REGION=us-central1,_SERVICE=koine-gate,_REPO=koine
+#
+# Or wire a Cloud Build trigger on push to main (Console: Cloud Build > Triggers).
+# One-time setup of the Artifact Registry repo the image is pushed to:
+#   gcloud artifacts repositories create koine \
+#     --repository-format=docker --location=us-central1
+#
+# The gate image is stdlib-only, so no Gemini credential is needed to build or
+# run it. The translation fleet (Dockerfile.fleet) is a separate Cloud Run Job
+# and is intentionally not deployed here.
+
+substitutions:
+  _REGION: us-central1
+  _SERVICE: koine-gate
+  _REPO: koine
+
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - Dockerfile
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:latest
+      - .
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}
+
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA
+      - --region=${_REGION}
+      - --platform=managed
+      - --allow-unauthenticated
+      # The gate defaults to the demo store. To watch a real repo, add the
+      # webhook secret here and override the container args, e.g.:
+      #   --update-secrets=KOINE_WEBHOOK_SECRET=koine-webhook-secret:latest
+      #   --command=python
+      #   --args=-m,koine.service,--source,README.md,--translation,es=README.es.md
+
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY
