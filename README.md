@@ -197,8 +197,11 @@ core complete and tested. ADK fleet wiring is done end-to-end
 (`koine/agents/orchestrator.py`: watcher-selected blocks → translator →
 reviewer → mechanical submit, with model calls injectable so the cycle is
 tested without any credential), and driveable from the CLI via `koine
-translate`; Cloud Run deployment and the GitHub webhook watcher are still in
-progress. Pre-existing work: none — see ATTRIBUTIONS.md.
+translate`. The GitHub webhook watcher (`koine/webhook.py`) is done too:
+stdlib-only HTTP service, HMAC-SHA256 signature verification (fail-closed),
+and a work queue mechanically derived from `state.derive_states` — no model,
+no dependency on the ADK extra. Cloud Run deployment of that service is still
+in progress. Pre-existing work: none — see ATTRIBUTIONS.md.
 
 Six defects that produced a **green gate over a broken translation** are
 fixed and pinned by regression tests in `tests/test_placement.py`. Two of them
@@ -212,6 +215,20 @@ contradicted guarantees this README already made:
 | Nothing looked at the translation side | appending a paragraph the source never contained edited no recorded block, so the gate printed `all translations current`, exit 0 | unmapped translation blocks are `UNSOURCED`, exit 2; orphans known at adoption stay allowed as `LEGACY_ORPHAN` |
 | Truncation was claimed but not checked | deleting the last N ledger entries left a chain that passes linkage *and* integrity — the README promised exit 2 and delivered exit 0 | each chain keeps an anchor of its expected head and length; unanchored chains say so instead of reporting a bare `VERIFIED` |
 | The pipeline could only add and overwrite | a section deleted from the source kept being documented in every translation, forever, and no koine command could clear it | its translation is retired and the placement it held is vacated, both recorded; koine removes only content it can prove it wrote |
+
+### Webhook watcher
+
+```bash
+export KOINE_WEBHOOK_SECRET=...   # must match the GitHub webhook secret
+python3 -m koine.webhook --source README.md \
+  --translation es=README.es.md --translation ru=README.ru.md \
+  --repo-root /path/to/checked-out/repo --port 8080
+```
+
+`GET /healthz` for liveness. `POST /webhook` accepts a GitHub `push` event,
+verifies its signature, and returns the mechanically-derived work queue
+(which docs/languages/blocks are `STALE` or `UNTRANSLATED`) for any changed
+doc — it never runs a model or writes to the ledger itself.
 
 ## License
 
