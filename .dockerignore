@@ -1,0 +1,14 @@
+.git
+.gitignore
+.venv
+**/__pycache__
+*.pyc
+.pytest_cache
+*.egg-info
+koine.egg-info
+tests
+docs
+demo
+.koine
+Dockerfile*
+.dockerignore

@@ -230,6 +230,87 @@ verifies its signature, and returns the mechanically-derived work queue
 (which docs/languages/blocks are `STALE` or `UNTRANSLATED`) for any changed
 doc — it never runs a model or writes to the ledger itself.
 
+### Dashboard
+
+A read-only web view of the same sealed state, served by koine itself:
+
+```bash
+python3 -m koine.dashboard --demo          # sample store, in a temp dir
+python3 -m koine.dashboard --source README.md \
+  --translation es=README.es.md --translation ru=README.ru.md
+```
+
+`GET /` is the status matrix (per block, per language), the chain-of-custody
+verification, and the mechanical work queue; `GET /api/snapshot` is the same
+data as JSON. It reads the ledgers and never writes, so rendering never mutates
+the store. For Cloud Run, `koine.service` serves the dashboard and the webhook
+on one port.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  push[GitHub push]
+  subgraph gate[Cloud Run service: koine-gate, stdlib]
+    wh[webhook watcher<br/>HMAC verify, fail-closed]
+    queue[work queue<br/>state.derive_states]
+    dash[dashboard<br/>read-only]
+    wh --> queue
+  end
+  subgraph job[Cloud Run Job: koine-fleet, ADK]
+    fleet[translator + reviewer agents<br/>Gemini 3.5]
+  end
+  push --> wh
+  queue --> fleet
+  fleet --> submit[mechanical submit<br/>contracts.submit_candidate]
+  submit --> ledger[(per-language ledger<br/>SHA-256 hash chain + anchor)]
+  ledger --> dash
+  ledger --> cigate[CI gate<br/>exit 0 / 1 / 2]
+```
+
+The model lives inside the fleet, which only *proposes*: every candidate is
+re-checked mechanically before `submit_candidate` seals it into the ledger, so
+Gemini can never declare a block current. The dashboard and the CI gate read
+the same sealed chain; swapping the model backend changes wording, never a
+verdict.
+
+## Deploy to Google Cloud Run
+
+The always-on surface (dashboard + webhook) is stdlib-only, so it deploys as
+one small service with no model credential:
+
+```bash
+gcloud run deploy koine-gate \
+  --source . --region us-central1 --allow-unauthenticated
+```
+
+`--source .` builds the `Dockerfile`; the default serves the demo store, so the
+hosted URL works immediately (`/` dashboard, `/healthz` liveness). To watch a
+real repo, set the secret and override the container args:
+
+```bash
+gcloud run deploy koine-gate --source . --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars KOINE_WEBHOOK_SECRET=$SECRET \
+  --command python \
+  --args=-m,koine.service,--source,README.md,--translation,es=README.es.md
+```
+
+Then point the GitHub webhook (content-type `application/json`, the same
+secret) at `https://<service-url>/webhook`.
+
+The translation fleet needs a Gemini credential, so it ships as a separate
+Cloud Run **Job** built from `Dockerfile.fleet` — it runs one cycle and exits:
+
+```bash
+docker build -f Dockerfile.fleet -t gcr.io/$PROJECT/koine-fleet .
+docker push gcr.io/$PROJECT/koine-fleet
+gcloud run jobs deploy koine-fleet --image gcr.io/$PROJECT/koine-fleet \
+  --region us-central1 --set-env-vars GOOGLE_API_KEY=$GEMINI_KEY \
+  --args translate,--source,README.md,--translation,es=README.es.md
+gcloud run jobs execute koine-fleet --region us-central1
+```
+
 ## License
 
 Apache-2.0.

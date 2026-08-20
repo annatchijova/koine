@@ -1,0 +1,19 @@
+# koine translation fleet: the ADK worker that runs the Gemini translator and
+# reviewer agents over the mechanical work queue. Needs the `agents` extra and
+# a Gemini credential (GOOGLE_API_KEY, or Vertex AI config) at run time.
+#
+# Deploy as a Cloud Run JOB, not an always-on service: it runs one translation
+# cycle and exits. The agents only propose; promotion stays mechanical
+# (contracts.submit_candidate), so a bad credential degrades this job without
+# ever touching a sealed verdict.
+FROM python:3.12-slim
+
+WORKDIR /app
+COPY pyproject.toml ./
+COPY koine ./koine
+RUN pip install --no-cache-dir ".[agents]"
+
+# `python -m koine translate --source ... --translation es=...` is the cycle.
+# Pass the arguments as the Cloud Run Job container args.
+ENTRYPOINT ["python", "-m", "koine"]
+CMD ["--help"]
