@@ -26,6 +26,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import notify
 from . import state as st
 from .ledger import Ledger
 
@@ -114,6 +115,8 @@ def handle_push(*, secret: str, signature_header: str | None, body: bytes,
     queue: list[WorkItem] = []
     for doc in docs_affected(docs, changed):
         queue.extend(compute_work_queue(doc, repo_root))
+    ref = payload.get("ref", "") or ""
+    branch = ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else None
     return {
         "changed_paths": sorted(changed),
         "work_queue": [
@@ -121,6 +124,13 @@ def handle_push(*, secret: str, signature_header: str | None, body: bytes,
              "reason": i.reason}
             for i in queue
         ],
+        # context for the notifier; parsing lives here so the handler need not
+        # re-parse the body. Untrusted -- the notifier escapes what it renders.
+        "context": {
+            "repo": (payload.get("repository") or {}).get("full_name"),
+            "branch": branch,
+            "sha": payload.get("after"),
+        },
     }
 
 
@@ -130,6 +140,7 @@ class WebhookRequestHandler(http.server.BaseHTTPRequestHandler):
     secret = ""
     docs: list = []
     repo_root = "."
+    notify_config = None
 
     def log_message(self, fmt, *args):  # silence default stderr access log
         pass
@@ -164,6 +175,9 @@ class WebhookRequestHandler(http.server.BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._respond(400, {"error": "invalid JSON payload"})
             return
+        statuses = notify.maybe_notify(result, self.notify_config)
+        if statuses:
+            result = {**result, "notifications": statuses}
         self._respond(200, result)
 
     def _respond(self, code: int, payload: dict) -> None:
@@ -175,24 +189,31 @@ class WebhookRequestHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def make_handler(secret: str, docs: list, repo_root: str | Path):
+def make_handler(secret: str, docs: list, repo_root: str | Path,
+                 notify_config=None):
     class _Handler(WebhookRequestHandler):
         pass
     _Handler.secret = secret
     _Handler.docs = docs
     _Handler.repo_root = str(repo_root)
+    _Handler.notify_config = notify_config
     return _Handler
 
 
 def serve(*, host: str = "0.0.0.0", port: int = 8080, secret: str,
-         docs: list, repo_root: str | Path = ".") -> None:
+         docs: list, repo_root: str | Path = ".", notify_config=None) -> None:
     if not secret:
         raise RuntimeError(
             "refusing to start: no webhook secret configured "
             "(set KOINE_WEBHOOK_SECRET)")
-    handler_cls = make_handler(secret, docs, repo_root)
+    handler_cls = make_handler(secret, docs, repo_root, notify_config)
     httpd = http.server.ThreadingHTTPServer((host, port), handler_cls)
-    print(f"koine webhook watcher listening on {host}:{port}")
+    channels = [c for c, on in (("slack", notify_config and notify_config.slack_url),
+                                ("email", notify_config and notify_config.email_ready()),
+                                ("github", notify_config and notify_config.github_token))
+                if on]
+    tail = f"  [notify: {', '.join(channels)}]" if channels else ""
+    print(f"koine webhook watcher listening on {host}:{port}{tail}")
     httpd.serve_forever()
 
 
@@ -213,7 +234,7 @@ def main(argv=None) -> int:
     doc = DocConfig(source=args.source, translations=translations,
                     koine_dir=args.koine_dir)
     serve(host=args.host, port=args.port, secret=secret, docs=[doc],
-         repo_root=args.repo_root)
+         repo_root=args.repo_root, notify_config=notify.NotifyConfig.from_env())
     return 0
 
 

@@ -110,6 +110,44 @@ def test_post_non_push_event_is_ignored(tmp_path):
     assert cap["code"] == 202
 
 
+def test_service_notifies_on_drift(tmp_path, monkeypatch):
+    from koine import notify
+    from koine.notify import NotifyConfig
+
+    sent = {}
+    monkeypatch.setattr(notify, "send_slack",
+                        lambda url, report, **kw: sent.update(url=url, text=report.text))
+
+    configs = build_demo(tmp_path)
+    handler_cls = make_handler(configs, tmp_path, SECRET,
+                               NotifyConfig(slack_url="https://hooks.slack.test/x"))
+    payload = {"commits": [{"added": [], "modified": ["README.md"], "removed": []}],
+               "repository": {"full_name": "annatchijova/koine"},
+               "ref": "refs/heads/main", "after": "sha123"}
+    body = json.dumps(payload).encode("utf-8")
+    headers = {"X-GitHub-Event": "push", "X-Hub-Signature-256": _sign(body),
+               "Content-Length": str(len(body))}
+    cap, out = _drive(handler_cls, "POST", "/webhook", headers=headers, body=body)
+    assert cap["code"] == 200
+    result = json.loads(out)
+    assert result["notifications"]["slack"] == "sent"
+    assert sent["url"] == "https://hooks.slack.test/x"
+    assert "drift report" in sent["text"]
+
+
+def test_service_does_not_notify_without_config(tmp_path):
+    # no notify_config -> no "notifications" key, webhook still works
+    configs = build_demo(tmp_path)
+    handler_cls = make_handler(configs, tmp_path, SECRET)
+    payload = {"commits": [{"added": [], "modified": ["README.md"], "removed": []}]}
+    body = json.dumps(payload).encode("utf-8")
+    headers = {"X-GitHub-Event": "push", "X-Hub-Signature-256": _sign(body),
+               "Content-Length": str(len(body))}
+    cap, out = _drive(handler_cls, "POST", "/webhook", headers=headers, body=body)
+    assert cap["code"] == 200
+    assert "notifications" not in json.loads(out)
+
+
 def test_dashboard_serves_without_a_secret(tmp_path):
     # the read surface must not depend on a webhook secret being configured
     configs = build_demo(tmp_path)

@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 
 from . import dashboard as dash
+from . import notify
 from . import webhook as wh
 
 
@@ -42,6 +43,7 @@ class ServiceRequestHandler(dash.DashboardRequestHandler):
     All decision logic still lives in the two pure cores; this only routes."""
     secret = ""
     webhook_docs: list = []
+    notify_config = None
 
     def do_POST(self):
         if self.path != "/webhook":
@@ -69,25 +71,36 @@ class ServiceRequestHandler(dash.DashboardRequestHandler):
             self._respond(400, json.dumps({"error": "invalid JSON payload"}).encode("utf-8"),
                           "application/json")
             return
+        statuses = notify.maybe_notify(result, self.notify_config)
+        if statuses:
+            result = {**result, "notifications": statuses}
         self._respond(200, json.dumps(result).encode("utf-8"), "application/json")
 
 
-def make_handler(configs: list, repo_root: str | Path, secret: str):
+def make_handler(configs: list, repo_root: str | Path, secret: str,
+                 notify_config=None):
     class _Handler(ServiceRequestHandler):
         pass
     _Handler.configs = configs
     _Handler.repo_root = str(repo_root)
     _Handler.secret = secret
     _Handler.webhook_docs = _webhook_docs_from(configs)
+    _Handler.notify_config = notify_config
     return _Handler
 
 
 def serve(*, host: str = "0.0.0.0", port: int = 8080, configs: list,
-          repo_root: str | Path = ".", secret: str = "") -> None:
+          repo_root: str | Path = ".", secret: str = "", notify_config=None) -> None:
     import http.server
-    handler_cls = make_handler(configs, repo_root, secret)
+    handler_cls = make_handler(configs, repo_root, secret, notify_config)
     httpd = http.server.ThreadingHTTPServer((host, port), handler_cls)
     surface = "dashboard + webhook" if secret else "dashboard (webhook fails closed: no secret)"
+    channels = [c for c, on in (("slack", notify_config and notify_config.slack_url),
+                                ("email", notify_config and notify_config.email_ready()),
+                                ("github", notify_config and notify_config.github_token))
+                if on]
+    if channels:
+        surface += " + notify: " + ", ".join(channels)
     print(f"koine service on http://{host}:{port}  [{surface}]")
     httpd.serve_forever()
 
@@ -109,6 +122,7 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     secret = os.environ.get("KOINE_WEBHOOK_SECRET", "")
+    notify_config = notify.NotifyConfig.from_env()
 
     if args.demo:
         import tempfile
@@ -116,7 +130,7 @@ def main(argv=None) -> int:
         configs = dash.build_demo(root)
         print(f"koine service: demo store built in {root}")
         serve(host=args.host, port=args.port, configs=configs,
-              repo_root=root, secret=secret)
+              repo_root=root, secret=secret, notify_config=notify_config)
         return 0
 
     if not args.source or not args.translation:
@@ -126,7 +140,7 @@ def main(argv=None) -> int:
     cfg = dash.DashboardConfig(source=args.source, translations=translations,
                                koine_dir=args.koine_dir, title=args.title)
     serve(host=args.host, port=args.port, configs=[cfg],
-          repo_root=args.repo_root, secret=secret)
+          repo_root=args.repo_root, secret=secret, notify_config=notify_config)
     return 0
 
 

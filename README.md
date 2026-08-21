@@ -246,6 +246,29 @@ data as JSON. It reads the ledgers and never writes, so rendering never mutates
 the store. For Cloud Run, `koine.service` serves the dashboard and the webhook
 on one port.
 
+### Notifications
+
+When a push introduces drift, koine can tell a human where — as a comment on
+the open PR (or the pushed commit), a Slack message, and an email. It is a
+narrator: it reports the queue the engine already computed and never forms a
+verdict. Each channel is independent and degrades honestly — a channel with no
+configuration is skipped, one that fails is reported and takes down neither the
+others nor the webhook response — and secrets come only from the environment,
+never a flag or a log. It fires only when there is drift, so a clean push is
+silent. Configure whichever channels you want:
+
+```bash
+# GitHub PR/commit comment
+export KOINE_GITHUB_TOKEN=...            # a token with repo comment scope
+# Slack
+export KOINE_SLACK_WEBHOOK_URL=...       # an incoming-webhook URL
+# email
+export KOINE_SMTP_HOST=smtp.example.com KOINE_SMTP_PORT=587
+export KOINE_SMTP_USER=... KOINE_SMTP_PASSWORD=...
+export KOINE_MAIL_FROM=koine@example.com KOINE_MAIL_TO=team@example.com
+# KOINE_SMTP_SSL=true for port 465; KOINE_SMTP_STARTTLS defaults to true
+```
+
 ## Architecture
 
 ```mermaid
@@ -261,6 +284,7 @@ flowchart LR
     fleet[translator + reviewer agents<br/>Gemini 3.5]
   end
   push --> wh
+  queue --> notify[notify<br/>PR comment / Slack / email]
   queue --> fleet
   fleet --> submit[mechanical submit<br/>contracts.submit_candidate]
   submit --> ledger[(per-language ledger<br/>SHA-256 hash chain + anchor)]
