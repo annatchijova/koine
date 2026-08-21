@@ -68,7 +68,9 @@ guards.
 ## Fit to the "Fortified Enterprise Fleet" track
 
 - **Registry** — a versioned manifest of per-language ledgers.
-- **Runtime** — the ADK orchestrator running one translate → review → seal cycle.
+- **Runtime** — the ADK orchestrator running the translate → review → seal cycle; in
+  CI it closes the loop, retranslating stale blocks and pushing the fix until the gate
+  goes green.
 - **Memory** — the tamper-evident hash chain, the audited system of record.
 - **Security** — HMAC-SHA256 webhook verification (fail-closed); a model that cannot
   promote; content-hash sealing that makes an out-of-band edit show up as `TAMPERED`.
@@ -77,14 +79,20 @@ guards.
 
 ## Honest status (what is verified vs. what is built)
 
-- **Verified this build:** 91 automated tests pass; the gate service is deployed to
+- **Verified this build:** 110 automated tests pass; the gate service is deployed to
   Cloud Run and its `/`, `/livez`, and `/api/snapshot` endpoints return 200 over the
   public URL; the dashboard is confirmed read-only by a test that asserts rendering
   never writes to the store; the webhook rejects a bad signature (401) live.
-- **Built and deployable, not yet exercised on Cloud Run in this build:** running the
-  Gemini fleet against the queue requires a Gemini credential; the fleet is packaged
-  as a Cloud Run Job (`Dockerfile.fleet`) but the live hosted URL demonstrates the
-  gate, dashboard, and webhook, not an in-service Gemini translation.
+- **The autonomous loop, proven on a real pull request:** a PR that edited the source
+  drove the full cycle end to end — koine commented on the PR with the block that went
+  stale and failed the check red, the ADK/Gemini fleet then retranslated that block
+  (a real Gemini call: translator drafts, adversarial reviewer, mechanical seal) and
+  pushed the fix, and the check re-ran green. Detect → report → repair → prove, with
+  the model proposing and the deterministic core sealing.
+- **Not exercised in this build:** the always-on hosted service runs the stdlib gate
+  and dashboard only; the fleet runs via `koine translate` (locally and in the
+  `koine autofix` CI workflow), not inside the public URL, and is also packaged as a
+  Cloud Run Job (`Dockerfile.fleet`).
 - **Demo data:** the hosted URL serves a synthetic sample store built through the real
   engine to exhibit every state; it is illustrative, not a production corpus.
 
