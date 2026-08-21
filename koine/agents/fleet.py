@@ -19,8 +19,14 @@ import uuid
 
 from . import contracts
 
+# NOTE: no `{...}` in this instruction. ADK treats braces in an agent
+# instruction as session-state injection templates and raises KeyError on an
+# unknown name, which silently broke every real translation (the stub-based
+# tests never exercised it). The source/target language pair is supplied per
+# call in the message by `make_translate_fn`, not templated here.
 TRANSLATOR_INSTRUCTIONS = """\
-You translate a single markdown block from {source_lang} to {target_lang}.
+You translate a single markdown block. The message gives the source language
+and the target language; translate from the former into the latter.
 The text contains placeholders like ⟦K0⟧, ⟦K1⟧. They stand for code, URLs,
 flags, and paths. You MUST keep every placeholder exactly as-is, each
 exactly once. Do not add, drop, or renumber them. Translate the prose
