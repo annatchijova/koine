@@ -52,12 +52,35 @@ def cmd_adopt(args) -> int:
 def cmd_status(args) -> int:
     store = Store(args.koine_dir)
     for lang, path in sorted(_parse_translations(args.translation).items()):
-        states = st.derive_states(args.source, path, lang, store.ledger(lang))
+        ledger = store.ledger(lang)
+        states = st.derive_states(args.source, path, lang, ledger)
         counts: dict = {}
         for s in states:
             counts[s.state] = counts.get(s.state, 0) + 1
         summary = ", ".join(f"{v} {k}" for k, v in sorted(counts.items()))
         print(f"[{lang}] {summary}")
+        if getattr(args, "explain", False):
+            pending = [s for s in states if s.state in (st.STALE, st.UNTRANSLATED)]
+            tampered = [s for s in states if s.state in (st.TAMPERED, st.UNSOURCED)]
+            tolerated = [s for s in states if s.state in (st.MACHINE_ONLY, st.LEGACY_UNVERIFIED, st.LEGACY_ORPHAN)]
+            chain = verify_chain(ledger)
+            print(f"    gate: {'BROKEN' if not chain['ok'] else ('DRIFT' if pending else 'OK')}")
+            print(f"    pending: {len(pending)}; integrity issues: {0 if chain['ok'] else len(chain['issues'])}; tolerated: {len(tolerated)}")
+            if pending:
+                next_up = ", ".join(
+                    f"{s.block_index}:{s.state}" for s in pending[:6]
+                )
+                print(f"    next: {next_up}" + (" …" if len(pending) > 6 else ""))
+            if tampered:
+                sample = ", ".join(
+                    f"{s.block_index}:{s.state}" for s in tampered[:4]
+                )
+                print(f"    integrity hits: {sample}" + (" …" if len(tampered) > 4 else ""))
+            if tolerated:
+                sample = ", ".join(
+                    f"{s.block_index}:{s.state}" for s in tolerated[:4]
+                )
+                print(f"    tolerated: {sample}" + (" …" if len(tolerated) > 4 else ""))
         for s in states:
             if s.state not in (st.CURRENT, st.NOT_TRANSLATABLE):
                 where = "translation block" if s.side == "translation" else "block"
@@ -121,7 +144,10 @@ def cmd_translate(args) -> int:
             print(f"  block {r.block_index}: {r.outcome}"
                   + (f" — {r.detail}" if r.detail else ""))
         promoted = sum(1 for r in results if r.outcome == "promoted")
-        print(f"[{lang}] {promoted}/{len(results)} promoted")
+        rejected = sum(1 for r in results if r.outcome == "rejected")
+        skipped = sum(1 for r in results if r.outcome == "skipped")
+        print(f"[{lang}] {promoted}/{len(results)} promoted "
+              f"({rejected} rejected, {skipped} skipped)")
         if promoted != len(results):
             worst = max(worst, 1)
     return worst
@@ -277,6 +303,9 @@ def main(argv=None) -> int:
             p.add_argument("--model", default="gemini-3.5-flash")
             p.add_argument("--dry-run", action="store_true",
                            help="show the frozen templates instead of calling a model")
+        if name == "status":
+            p.add_argument("--explain", action="store_true",
+                           help="print a short operational summary before the block list")
 
     g = sub.add_parser("glossary")
     g.add_argument("action", choices=["list", "propose", "bind"])
