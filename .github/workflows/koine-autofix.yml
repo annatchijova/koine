@@ -1,0 +1,57 @@
+# Close the loop: the ADK/Gemini fleet retranslates the blocks that drifted and
+# pushes the fix back to the branch, which turns the koine gate green.
+#
+# Triggered by hand (workflow_dispatch) so a Gemini run is deliberate, not
+# automatic on every push. Needs a repo secret GEMINI_API_KEY:
+#   gh secret set GEMINI_API_KEY
+#
+# The fleet only *proposes*; koine's mechanical submit seals each candidate into
+# the ledger, so this job cannot promote a translation that fails the same
+# checks the gate enforces. It commits nothing when there is no drift.
+name: koine autofix
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch to retranslate and push the fix to"
+        required: true
+        default: "demo/drift-notification"
+
+permissions:
+  contents: write   # push the retranslation back to the branch
+
+jobs:
+  autofix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+          token: ${{ github.token }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install koine (with the ADK fleet)
+        run: pip install --quiet -e '.[agents]'
+      - name: run the fleet over the pending blocks
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python3 -m koine --koine-dir docs/i18n-demo/.koine translate \
+            --source docs/i18n-demo/guide.md \
+            --translation es=docs/i18n-demo/guide.es.md \
+            --source-lang en
+      - name: commit and push the fix if the fleet changed anything
+        run: |
+          if [ -n "$(git status --porcelain docs/i18n-demo)" ]; then
+            git config user.name "koine-autofix"
+            git config user.email "koine-autofix@users.noreply.github.com"
+            git add docs/i18n-demo
+            git commit -m "koine autofix: fleet retranslated stale blocks"
+            git push origin "HEAD:${{ inputs.branch }}"
+            echo "pushed retranslation to ${{ inputs.branch }}"
+          else
+            echo "no drift to fix"
+          fi

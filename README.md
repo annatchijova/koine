@@ -276,6 +276,20 @@ export KOINE_MAIL_FROM=koine@example.com KOINE_MAIL_TO=team@example.com
 # KOINE_SMTP_SSL=true for port 465; KOINE_SMTP_STARTTLS defaults to true
 ```
 
+### Autofix — closing the loop
+
+Detecting drift is half of it; koine can also *repair* it. `koine translate`
+runs the ADK/Gemini fleet over every pending block — a translator drafts, an
+adversarial reviewer can only reject, and `submit_candidate` seals the survivor
+into the ledger. The model proposes; the deterministic core decides, so the
+fleet can never promote a translation that fails the checks the gate enforces.
+
+Wired into CI, that closes the loop end to end: a PR edits the source → the gate
+comments the stale blocks and fails red → the `koine autofix` workflow
+(`.github/workflows/koine-autofix.yml`, a manual `workflow_dispatch`, needs a
+`GEMINI_API_KEY` secret) retranslates them and pushes the fix → the gate re-runs
+green. A human broke it; the fleet detected, reported, repaired, and proved it.
+
 ## Architecture
 
 ```mermaid
