@@ -128,11 +128,19 @@
     <button id="themebtn" class="themebtn" type="button" aria-label="toggle light or dark theme"></button>
   </header>
 
-  <p class="lead">A GitHub push becomes a mechanically-derived translation queue.
+  <p class="lead">A GitHub push becomes a translation queue you can inspect.
   A <b>Gemini</b> fleet on <b>Google ADK</b> proposes candidates; a deterministic
   core re-checks and <b>seals</b> each one into a per-language hash chain. The
   model is never on the decision path — swap the backend and the wording changes,
   never a verdict. Everything runs on <b>Google Cloud Run</b>.</p>
+
+  <div class="principle">
+    <h3>Judge path</h3>
+    <p>Read the diagram top to bottom as one route: GitHub push → candidate
+    proposal → mechanical submit → per-language ledger → read-only dashboard.
+    If the gate is DRIFT or BROKEN, the ledger explains why. Changing the model
+    changes only the proposed wording; the sealed verdict stays fixed.</p>
+  </div>
 
   <div class="legend">
     <span class="chip"><span class="sw det"></span>deterministic core — decides &amp; seals</span>
@@ -153,7 +161,7 @@
       <div class="nodes">
         <div class="node"><div class="t">webhook watcher</div>
           <div class="s">HMAC-SHA256 verify<br>fail-closed</div></div>
-        <div class="node"><div class="t">work queue</div>
+        <div class="node"><div class="t">review queue</div>
           <div class="s">state.derive_states<br>STALE / UNTRANSLATED</div></div>
         <div class="node"><div class="t">dashboard</div>
           <div class="s">read-only view<br>paints sealed state</div></div>
@@ -194,7 +202,7 @@
 
     <div class="nodes">
       <div class="node"><div class="t">dashboard</div>
-        <div class="s">status matrix &middot; chain of custody &middot; work queue</div></div>
+        <div class="s">status matrix &middot; chain of custody &middot; review queue</div></div>
       <div class="node"><div class="t">CI gate</div>
         <div class="s">exit 0 current &middot; 1 drift &middot; 2 tampered/broken</div></div>
     </div>
