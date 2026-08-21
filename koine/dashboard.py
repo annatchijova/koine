@@ -136,6 +136,15 @@ def build_snapshot(configs: list, repo_root: str | Path = ".") -> dict:
     repo_root = Path(repo_root)
     docs_out: list = []
     overall = 0
+    summary = {
+        "docs": 0,
+        "languages": 0,
+        "pending": 0,
+        "current": 0,
+        "drift": 0,
+        "broken": 0,
+        "tolerated": 0,
+    }
     for cfg in configs:
         source_path = repo_root / cfg.source
         langs_out: list = []
@@ -144,6 +153,15 @@ def build_snapshot(configs: list, repo_root: str | Path = ".") -> dict:
             lang_snap, worst = _lang_snapshot(
                 source_path, repo_root / tpath, lang, ledger)
             overall = max(overall, worst)
+            summary["languages"] += 1
+            summary["pending"] += len(lang_snap["queue"])
+            summary["tolerated"] += sum(lang_snap["tolerated"].values())
+            if lang_snap["gate"] == GATE_BROKEN:
+                summary["broken"] += 1
+            elif lang_snap["gate"] == GATE_DRIFT:
+                summary["drift"] += 1
+            else:
+                summary["current"] += 1
             langs_out.append(lang_snap)
         docs_out.append({
             "source": cfg.source,
@@ -152,12 +170,15 @@ def build_snapshot(configs: list, repo_root: str | Path = ".") -> dict:
             "source_exists": source_path.exists(),
             "langs": langs_out,
         })
+    summary["docs"] = len(docs_out)
     return {
-        "note": ("Read-only view. koine derives every state from hashes and "
-                 "seals every ledger entry before this page renders; the "
+        "note": ("Read-only view. Start with the summary cards, then open the "
+                 "most severe document. koine derives every state from hashes "
+                 "and seals every ledger entry before this page renders; the "
                  "dashboard paints that sealed state and can never alter a "
                  "verdict."),
         "overall_gate": _gate_level(overall),
+        "summary": summary,
         "docs": docs_out,
     }
 
@@ -410,6 +431,16 @@ PAGE_HTML = """<!doctype html>
   .themebtn:hover{border-color:var(--hover-brd);color:var(--ink)}
   main{max-width:1180px;margin:0 auto;padding:18px 26px 0}
   .note{color:var(--md);font-size:13px;margin:10px 0 18px;max-width:76ch;line-height:1.55}
+  .hero{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:6px 0 18px}
+  .hero .stat{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px;box-shadow:var(--shadow)}
+  .hero .label{font-family:var(--display);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--md);margin-bottom:8px}
+  .hero .value{font-family:var(--display);font-size:26px;font-weight:800;letter-spacing:.02em}
+  .hero .value.g-OK,.hero .value.g-DRIFT,.hero .value.g-BROKEN{
+    display:inline-flex;align-items:center;justify-content:center;
+    padding:4px 11px;border-radius:10px;border:1px solid transparent;
+    width:fit-content;font-size:18px;line-height:1.1
+  }
+  .hero .hint{margin-top:6px;color:var(--md);font-size:12px;line-height:1.45}
   .badge{font-family:var(--display);font-weight:800;font-size:12px;padding:5px 13px;border-radius:999px;letter-spacing:.12em}
   .g-OK{background:rgba(34,197,94,.15);color:var(--ok);border:1px solid rgba(34,197,94,.5)}
   .g-DRIFT{background:rgba(245,158,11,.15);color:var(--drift);border:1px solid rgba(245,158,11,.5)}
@@ -419,6 +450,11 @@ PAGE_HTML = """<!doctype html>
   .doc h2{font-family:var(--display);font-size:19px;margin:0 0 4px;font-weight:800;letter-spacing:.01em}
   .doc .path{color:var(--md);font-family:var(--mono);font-size:12px;margin-bottom:16px}
   .matrix-wrap{overflow-x:auto;margin:8px 0 4px}
+  details.matrix-shell{margin-top:10px}
+  details.matrix-shell > summary{list-style:none;cursor:pointer;user-select:none;font-family:var(--display);font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);display:flex;align-items:center;gap:10px}
+  details.matrix-shell > summary::-webkit-details-marker{display:none}
+  details.matrix-shell > summary::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,var(--accent-soft),transparent)}
+  details.matrix-shell[open] > summary{margin-bottom:8px}
   table.matrix{border-collapse:separate;border-spacing:0;font-family:var(--mono);font-size:12px}
   table.matrix th,table.matrix td{border-bottom:1px solid var(--hair);padding:7px 11px;text-align:center;white-space:nowrap}
   table.matrix thead th{font-family:var(--display);color:var(--md);font-weight:700;font-size:12px;letter-spacing:.1em;text-transform:uppercase}
@@ -484,6 +520,7 @@ PAGE_HTML = """<!doctype html>
 </header>
 <main>
   <p class="note" id="note"></p>
+  <div class="hero" id="hero"></div>
   <div class="legend" id="legend"></div>
   <div id="docs"></div>
 </main>
@@ -513,6 +550,37 @@ function renderLegend(){
   for(const s of LEGEND_ORDER){ const c=cell(s,""); c.style.minWidth="auto"; box.appendChild(c); }
 }
 
+function heroCard(label, value, hint, gate){
+  const card = el("section","stat");
+  card.appendChild(el("div","label",label));
+  const val = el("div","value",value);
+  if(gate) val.className += " g-"+gate;
+  card.appendChild(val);
+  if(hint) card.appendChild(el("div","hint",hint));
+  return card;
+}
+
+function renderHero(snap){
+  const hero = document.getElementById("hero");
+  hero.innerHTML = "";
+  const totalLangs = snap.docs.reduce((n, d) => n + d.langs.length, 0);
+  const totalPending = snap.summary?.pending ?? 0;
+  const totalCurrent = snap.summary?.current ?? 0;
+  const totalDrift = snap.summary?.drift ?? 0;
+  const totalBroken = snap.summary?.broken ?? 0;
+  hero.appendChild(heroCard("Overall gate", snap.overall_gate,
+    "The worst state across every ledger.", snap.overall_gate));
+  hero.appendChild(heroCard("Documents", String(snap.summary?.docs ?? snap.docs.length),
+    "Source documents being tracked by this view."));
+  hero.appendChild(heroCard("Languages", String(totalLangs),
+    "Each language has its own ledger and gate result."));
+  hero.appendChild(heroCard("Pending queue", String(totalPending),
+    "Blocks waiting on translation or review."));
+  hero.appendChild(heroCard("Current / drift / broken",
+    `${totalCurrent} / ${totalDrift} / ${totalBroken}`,
+    "A quick scan of the overall operating state."));
+}
+
 function chainCard(ch){
   const card = el("div","card");
   card.appendChild(el("h3",null,"Chain of custody"));
@@ -540,7 +608,7 @@ function chainCard(ch){
 
 function fleetCard(lang){
   const card = el("div","card");
-  card.appendChild(el("h3",null,"Fleet &amp; work queue"));
+  card.appendChild(el("h3",null,"Review pipeline"));
   const pipe = el("div","pipe");
   ["watcher","translator","reviewer","submit"].forEach((s,i)=>{
     if(i) pipe.appendChild(el("span","arrow","→"));
@@ -602,6 +670,9 @@ function renderDoc(doc){
   const rows = [...idxSet].sort((a,b)=>a-b);
 
   const wrap = el("div","matrix-wrap");
+  const shell = el("details","matrix-shell");
+  shell.open = true;
+  shell.appendChild(el("summary",null,"Detailed block matrix"));
   const table = el("table","matrix");
   const thead = el("thead"); const htr = el("tr");
   htr.appendChild(el("th","rowhead","block"));
@@ -624,7 +695,7 @@ function renderDoc(doc){
     });
     tbody.appendChild(tr);
   });
-  table.appendChild(tbody); wrap.appendChild(table); box.appendChild(wrap);
+  table.appendChild(tbody); wrap.appendChild(table); shell.appendChild(wrap); box.appendChild(shell);
 
   // per-language cards
   const cols = el("div","cols");
@@ -658,6 +729,7 @@ async function refresh(){
     ov.textContent = snap.overall_gate;
     ov.className = "badge g-"+snap.overall_gate;
     document.getElementById("note").textContent = snap.note;
+    renderHero(snap);
     const docs = document.getElementById("docs");
     docs.innerHTML="";
     snap.docs.forEach(d=> docs.appendChild(renderDoc(d)));
