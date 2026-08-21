@@ -27,9 +27,9 @@ inputs:
     default: "false"
   github-token:
     description: >-
-      Token used to post the PR comment when `comment` is true. Pass
-      ${{ github.token }} (or a PAT with pull-request write). Only needed for
-      the comment; the gate itself needs no token.
+      Token used to post the PR comment when `comment` is true. Pass the
+      workflow's github.token (or a PAT with pull-request write). Only needed
+      for the comment; the gate itself needs no token.
     default: ""
 
 runs:
