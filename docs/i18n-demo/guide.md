@@ -2,6 +2,6 @@
 
 Install koine with your package manager of choice.
 
-Run it against your documents on every pull request to catch translation drift before release.
+Run it in CI on every pull request, and it will retranslate stale blocks for you automatically.
 
 Every verdict is sealed, so a passing check is one you can prove.
