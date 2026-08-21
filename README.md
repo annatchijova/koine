@@ -186,9 +186,16 @@ Use `@same` as a rendering to require a term be kept verbatim in a language.
   with:
     source: README.md
     translations: "es=README.es.md ru=README.ru.md"
+    comment: "true"                 # post a drift report on the PR
+    github-token: ${{ github.token }}
 ```
 
-The gate fails red the moment any language silently drifts.
+The gate fails red the moment any language silently drifts. With `comment:
+true` it also leaves the drift report on the pull request (the job needs
+`permissions: pull-requests: write`), so a reviewer sees exactly which blocks
+went stale without opening the logs. koine dogfoods this on its own repo — see
+`.github/workflows/koine-docs.yml`, which watches the `docs/i18n-demo/` pair;
+open a PR that edits `docs/i18n-demo/guide.md` to see the comment appear.
 
 ## Status
 

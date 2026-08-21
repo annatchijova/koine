@@ -22,13 +22,40 @@ inputs:
   forbid-legacy:
     description: "Fail on adopted-but-unverified legacy pairs"
     default: "false"
+  comment:
+    description: "Post a drift report as a comment on the pull request"
+    default: "false"
+  github-token:
+    description: >-
+      Token used to post the PR comment when `comment` is true. Pass
+      ${{ github.token }} (or a PAT with pull-request write). Only needed for
+      the comment; the gate itself needs no token.
+    default: ""
 
 runs:
   using: "composite"
   steps:
-    - shell: bash
+    - id: install
+      shell: bash
+      run: pip install --quiet koine || pip install --quiet -e ${{ github.action_path }}/..
+
+    # Report drift on the PR first, so the comment appears even when the gate
+    # below fails the check. Slack/email fire too if their env vars are set on
+    # the job. Never fails the build itself -- the gate owns pass/fail.
+    - id: comment
+      if: ${{ inputs.comment == 'true' }}
+      shell: bash
+      env:
+        KOINE_GITHUB_TOKEN: ${{ inputs.github-token }}
       run: |
-        pip install --quiet koine || pip install --quiet -e ${{ github.action_path }}/..
+        ARGS=""
+        for t in ${{ inputs.translations }}; do ARGS="$ARGS --translation $t"; done
+        python3 -m koine --koine-dir "${{ inputs.koine-dir }}" notify \
+          --source "${{ inputs.source }}" $ARGS
+
+    - id: gate
+      shell: bash
+      run: |
         ARGS=""
         for t in ${{ inputs.translations }}; do ARGS="$ARGS --translation $t"; done
         [ "${{ inputs.forbid-machine-only }}" = "true" ] && ARGS="$ARGS --forbid-machine-only"

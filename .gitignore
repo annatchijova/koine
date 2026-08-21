@@ -5,3 +5,8 @@ __pycache__/
 *.egg-info/
 .koine/
 *.jsonl.lock
+
+# koine's own managed demo pair is tracked on purpose: a koine ledger is
+# designed to travel in git, and this store backs the dogfooding workflow.
+!docs/i18n-demo/.koine/
+docs/i18n-demo/.koine/*.lock

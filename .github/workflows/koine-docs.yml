@@ -1,0 +1,32 @@
+# Dogfooding: koine watches its own demo doc pair. Open a PR that edits
+# docs/i18n-demo/guide.md and koine comments on the PR with the Spanish blocks
+# that went stale, then fails the check until they are retranslated.
+name: koine docs drift
+
+on:
+  pull_request:
+    paths:
+      - "docs/i18n-demo/**"
+
+permissions:
+  contents: read
+  pull-requests: write   # the github.token needs this to comment on the PR
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: koine gate + PR comment
+        uses: ./action
+        with:
+          source: docs/i18n-demo/guide.md
+          translations: "es=docs/i18n-demo/guide.es.md"
+          koine-dir: docs/i18n-demo/.koine
+          comment: "true"
+          github-token: ${{ github.token }}
+          # Slack/email also fire if you set the env at the job level, e.g.:
+          #   KOINE_SLACK_WEBHOOK_URL, KOINE_SMTP_HOST, KOINE_MAIL_TO, ...

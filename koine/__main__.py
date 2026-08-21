@@ -4,6 +4,7 @@
     koine status    --source README.md --translation es=README.es.md
     koine translate --source README.md --translation es=README.es.md [--dry-run]
     koine gate      --source README.md --translation es=README.es.md [--forbid-machine-only]
+    koine notify    --source README.md --translation es=README.es.md   # comment drift on the PR
     koine verify                       # every chain in .koine/
     koine glossary  list | propose | bind
 
@@ -13,6 +14,7 @@ gate convention: 0 clean, 1 drift, 2 integrity failure.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -206,12 +208,59 @@ def cmd_verify(args) -> int:
     return worst
 
 
+def cmd_notify(args) -> int:
+    """Report drift to a human: a comment on the PR (or the pushed commit) and,
+    if configured, Slack and email. Built for CI -- it reads the PR context from
+    the GitHub Actions environment and the channels from NotifyConfig.from_env.
+    It only reports the mechanically-derived queue; it decides nothing, and it
+    no-ops cleanly when there is no drift or no channel is configured."""
+    import json as _json
+
+    from . import notify
+    from .webhook import DocConfig, compute_work_queue
+
+    doc = DocConfig(source=args.source,
+                    translations=_parse_translations(args.translation),
+                    koine_dir=args.koine_dir)
+    queue = compute_work_queue(doc, repo_root=".")
+    if not queue:
+        print("koine notify: no drift, nothing to report")
+        return 0
+
+    cfg = notify.NotifyConfig.from_env()
+    if not cfg.any():
+        print("koine notify: drift found but no channel configured "
+              "(set KOINE_GITHUB_TOKEN / KOINE_SLACK_WEBHOOK_URL / SMTP vars)")
+        return 1 if args.fail_on_drift else 0
+
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    sha = os.environ.get("GITHUB_SHA")
+    branch = os.environ.get("GITHUB_HEAD_REF") or None
+    pr_number = None
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if event_path and Path(event_path).exists():
+        try:
+            data = _json.loads(Path(event_path).read_text(encoding="utf-8"))
+            pr_number = (data.get("pull_request") or {}).get("number")
+        except (ValueError, OSError):
+            pr_number = None
+
+    queue_dicts = [{"doc": i.doc, "lang": i.lang, "block_index": i.block_index,
+                    "reason": i.reason} for i in queue]
+    report = notify.format_report([], queue_dicts, repo=repo, branch=branch)
+    statuses = notify.dispatch(report, cfg, context={
+        "repo": repo, "branch": branch, "sha": sha, "pr_number": pr_number})
+    for ch, status in sorted(statuses.items()):
+        print(f"  {ch}: {status}")
+    return 1 if args.fail_on_drift else 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="koine")
     ap.add_argument("--koine-dir", default=".koine")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    for name in ("adopt", "status", "translate", "gate", "verify"):
+    for name in ("adopt", "status", "translate", "gate", "notify", "verify"):
         p = sub.add_parser(name)
         if name != "verify":
             p.add_argument("--source", required=True)
@@ -220,6 +269,9 @@ def main(argv=None) -> int:
         if name == "gate":
             p.add_argument("--forbid-machine-only", action="store_true")
             p.add_argument("--forbid-legacy", action="store_true")
+        if name == "notify":
+            p.add_argument("--fail-on-drift", action="store_true",
+                           help="exit 1 when drift was reported (for a blocking check)")
         if name == "translate":
             p.add_argument("--source-lang", default="en")
             p.add_argument("--model", default="gemini-3.5-flash")
@@ -242,7 +294,7 @@ def main(argv=None) -> int:
                      "and the glossary records who made it")
 
     return {"adopt": cmd_adopt, "status": cmd_status, "translate": cmd_translate,
-            "gate": cmd_gate, "verify": cmd_verify,
+            "gate": cmd_gate, "notify": cmd_notify, "verify": cmd_verify,
             "glossary": cmd_glossary}[args.cmd](args)
 
 

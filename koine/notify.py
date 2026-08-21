@@ -145,10 +145,14 @@ def find_open_pr(repo: str, branch: str, token: str, *, opener=urllib.request.ur
 
 
 def notify_github(repo: str, branch, sha, report: Report, token: str,
-                  *, opener=urllib.request.urlopen) -> str:
-    """Comment on the open PR for `branch` if there is one, else on the commit.
-    Returns a short label of what it did. Raises if neither target exists."""
-    pr = find_open_pr(repo, branch, token, opener=opener) if branch else None
+                  *, pr_number=None, opener=urllib.request.urlopen) -> str:
+    """Comment on the PR for this change if there is one, else on the commit.
+    A known `pr_number` (e.g. from a GitHub Actions event) is used directly and
+    is more reliable than a head lookup, which fails for forked branches.
+    Returns a short label of what it did. Raises if no target exists."""
+    pr = pr_number
+    if pr is None and branch:
+        pr = find_open_pr(repo, branch, token, opener=opener)
     if pr is not None:
         _gh("POST", f"/repos/{repo}/issues/{pr}/comments", token,
             data={"body": report.markdown}, opener=opener)
@@ -241,7 +245,7 @@ def dispatch(report: Report, cfg: NotifyConfig, *, context=None,
         try:
             did = notify_github(context["repo"], context.get("branch"),
                                 context.get("sha"), report, cfg.github_token,
-                                opener=gh_opener)
+                                pr_number=context.get("pr_number"), opener=gh_opener)
             out["github"] = f"sent ({did})"
         except Exception as e:  # noqa: BLE001
             out["github"] = f"failed: {type(e).__name__}"

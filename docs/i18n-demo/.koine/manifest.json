@@ -1,0 +1,6 @@
+{
+  "ledgers": {
+    "es": "ledger.es.jsonl"
+  },
+  "schema_version": 1
+}
