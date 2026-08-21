@@ -1,11 +1,24 @@
 # koine
 
-**Multilingual repos that cannot silently lie.** koine keeps a repository's
-documentation synchronized across languages — not by translating harder, but
-by making it *mechanically impossible* for a stale or edited translation to
-claim it is current. An agent fleet proposes translations, reviews them
-adversarially, and curates terminology; **no model ever decides what counts
-as up to date.** State is derived from hashes alone.
+**Multilingual repos that cannot silently lie.** When a source doc changes,
+koine detects the drift, queues the affected blocks, proposes translations,
+reviews them adversarially, and blocks release until the ledger is honest.
+It keeps a repository's documentation synchronized across languages — not by
+translating harder, but by making it *mechanically impossible* for a stale or
+edited translation to claim it is current. An agent fleet does the work; **no
+model ever decides what counts as up to date.** State is derived from hashes
+alone.
+
+## Judge shortcut
+
+If you only have 30 seconds:
+
+- change one source paragraph,
+- run the gate,
+- watch koine mark the affected translations stale,
+- then verify the ledger still matches the source.
+
+That is the whole product: detect drift, block lies, keep the history honest.
 
 > The unlikely hero: the non-English-speaking developer. Most of the world's
 > programmers read documentation in a language they didn't grow up in — and
@@ -57,6 +70,13 @@ The last four rows are the ones a summary is tempted to round off, so the
 gate refuses to: when it passes with any of them present it prints
 *"passing — nothing stale or tampered, but not all current: …"*, never
 "all translations current".
+
+## Canonical demo path
+
+1. Edit a source block in the README.
+2. Run `koine gate` and watch the affected translations turn `STALE`.
+3. Run `koine translate` or inspect the queue to see the fleet propose updates.
+4. Run `koine verify` to confirm the ledger is still mechanically consistent.
 
 ### Two things hashes alone cannot see
 
