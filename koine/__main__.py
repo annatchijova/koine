@@ -64,7 +64,11 @@ def cmd_status(args) -> int:
             tampered = [s for s in states if s.state in (st.TAMPERED, st.UNSOURCED)]
             tolerated = [s for s in states if s.state in (st.MACHINE_ONLY, st.LEGACY_UNVERIFIED, st.LEGACY_ORPHAN)]
             chain = verify_chain(ledger)
-            print(f"    gate: {'BROKEN' if not chain['ok'] else ('DRIFT' if pending else 'OK')}")
+            # BROKEN on any integrity failure: a broken/truncated chain OR a
+            # TAMPERED/UNSOURCED block (both are gate exit 2). Without the
+            # `tampered` term this printed OK/DRIFT over a tampered translation.
+            verdict = "BROKEN" if (not chain["ok"] or tampered) else ("DRIFT" if pending else "OK")
+            print(f"    gate: {verdict}")
             print(f"    pending: {len(pending)}; integrity issues: {0 if chain['ok'] else len(chain['issues'])}; tolerated: {len(tolerated)}")
             if pending:
                 next_up = ", ".join(
