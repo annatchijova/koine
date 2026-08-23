@@ -548,3 +548,131 @@ def test_an_unknowable_head_is_not_reported_as_a_match(tmp_path):
     cannot tell, rather than implying agreement."""
     from koine import webhook as wh
     assert wh.head_sha(tmp_path) is None
+
+
+# ---------- exactly what the glossary compares, stated as a table ----------
+
+def _binding(term="commit"):
+    from koine.glossary import Entry, Glossary as G
+    return G([Entry(term=term, renderings={"es": "@same"}, status="binding",
+                    decided_by="anna")])
+
+
+def _verdict(source):
+    found = _binding().violations(source, "Siempre confirme.", "es")
+    if not found:
+        return "SILENT"
+    return "LOOKALIKE" if "lookalike" in found[0] else "ENFORCED"
+
+
+@pytest.mark.parametrize("source, verdict, why", [
+    ("Always commit the lockfile.", "ENFORCED", "exact code points"),
+    ("Always Commit the lockfile.", "SILENT", "case-sensitive, by design"),
+    ("Always COMMIT the lockfile.", "SILENT", "case-sensitive, by design"),
+    ("Always coмmit the lockfile.", "LOOKALIKE", "Cyrillic м"),
+    ("Always ｃｏｍｍｉｔ the lockfile.", "LOOKALIKE", "fullwidth forms"),
+    ("Always com​mit the lockfile.", "LOOKALIKE", "zero-width space inside"),
+    ("Nothing to see here.", "SILENT", "term genuinely absent"),
+])
+def test_what_the_glossary_actually_compares(source, verdict, why):
+    """The comparison semantics, pinned so they cannot drift silently.
+
+    NFC-normalized exact code points for enforcement, a separate skeleton pass
+    (compatibility forms + invisibles removed + curated lookalikes) to answer
+    "is the term here in disguise", and no case folding — `Glossary` documents
+    terms as case-sensitive and this does not quietly change that.
+
+    The zero-width row is the one that took two passes to close: an invisible
+    character inside an ASCII word defeats the literal match and is not
+    mixed-script either, so both detections missed it and the binding went
+    silent.
+    """
+    assert _verdict(source) == verdict, why
+
+
+def test_a_decomposed_source_still_enforces():
+    import unicodedata
+    from koine.glossary import Entry, Glossary as G
+
+    glossary = G([Entry(term="commit", renderings={"es": "@same"},
+                        status="binding", decided_by="anna")])
+    nfd = unicodedata.normalize("NFD", "Always commit the lockfile.")
+    found = glossary.violations(nfd, "Siempre confirme.", "es")
+    assert found and "must appear" in found[0]
+
+
+# ---------- the protocol's own marker is not domain data ----------
+
+def test_freeze_dissolves_the_marker_ambiguity_rather_than_carrying_it():
+    """A protocol metasymbol that can also occur as domain data is a standing
+    invitation for syntax to become authority. freeze resolves it by making
+    the question unanswerable *and* irrelevant: a literal ⟦Kn⟧ in the source
+    is itself frozen, so no literal marker survives into the template. Every
+    marker a model sees is generated and maps to exactly one span, and the
+    multiset check rejects any the model adds.
+    """
+    text = "koine writes ⟦K0⟧ and also `code` here."
+    frozen = freeze(text)
+
+    assert frozen.spans == ["⟦K0⟧", "`code`"]
+    assert frozen.template == "koine writes ⟦K0⟧ and also ⟦K1⟧ here."
+    assert thaw(frozen, frozen.template) == text
+    # reordering is the model's prerogative and still restores byte-exact
+    assert thaw(frozen, "Here ⟦K1⟧ then ⟦K0⟧.") == "Here `code` then ⟦K0⟧."
+    with pytest.raises(ValueError):
+        thaw(frozen, "Text ⟦K0⟧ ⟦K1⟧ ⟦K2⟧")
+
+
+# ---------- the write/read transformer reaches a fixed point ----------
+
+@pytest.mark.parametrize("seed", range(8))
+def test_the_write_read_transformer_converges_in_one_step(tmp_path, seed):
+    """S0 → write(S0) → S1 → write(S1) → … must reach Sn = Sn+1, fast.
+
+    `split_blocks` is a lossy projection: inter-block whitespace is not part
+    of any block, so writing normalizes it. That is tolerable only if the
+    normalization is idempotent. A transformer that never settles would keep
+    producing files that differ from the ones the ledger's hashes were taken
+    against, and would interact with the drift and tamper states even though
+    each of those is independently correct.
+    """
+    import random
+
+    chunks = ["Ordinary paragraph.", "# Heading", "- item a\n- item b",
+              "```py\nx = 1\n\ny = 2\n```", "| a | b |\n|---|---|",
+              "> a quotation", "---", "Another paragraph with `code`."]
+    separators = ["\n\n", "\n\n\n", "\n   \n", "\n\n\n\n"]
+
+    rng = random.Random(seed)
+    path = tmp_path / "doc.md"
+    for _ in range(50):
+        doc = (rng.choice(["", "\n", "\n\n"])
+               + rng.choice(separators).join(
+                   rng.sample(chunks, rng.randint(2, 5)))
+               + rng.choice(["", "\n", "\n\n\n"]))
+        path.write_text(doc, encoding="utf-8")
+
+        history = [doc]
+        for _ in range(4):
+            contracts._write_raws(str(path), contracts._read_raws(str(path)))
+            history.append(path.read_text(encoding="utf-8"))
+            if history[-1] == history[-2]:
+                break
+        else:
+            pytest.fail(f"no fixed point in 4 steps for {doc!r}: {history}")
+
+        assert len(history) <= 3, (
+            f"converged only after {len(history) - 1} writes: {doc!r}")
+
+
+def test_normalization_never_changes_a_block_hash(tmp_path):
+    """The projection is lossy about whitespace *between* blocks and must be
+    lossless about the blocks themselves — those are what the ledger sealed."""
+    path = tmp_path / "doc.md"
+    path.write_text("\n\nAlpha.\n   \nBeta.\n\n\n\n```py\nx = 1\n\ny = 2\n```\n\n",
+                    encoding="utf-8")
+    before = [b.raw for b in split_blocks(path.read_text(encoding="utf-8"))]
+
+    contracts._write_raws(str(path), contracts._read_raws(str(path)))
+
+    assert [b.raw for b in split_blocks(path.read_text(encoding="utf-8"))] == before

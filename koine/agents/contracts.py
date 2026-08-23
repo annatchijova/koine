@@ -337,6 +337,17 @@ def submit_candidate(*, source_path: str, block_index: int, lang: str,
         # read, place, write and append are one fact. Split across the lock
         # boundary, two writers each read the same file, each placed a block,
         # and the second write erased the first while both entries landed.
+        #
+        # The lock removes the concurrent writer. It does not make the pair
+        # crash-atomic, and the three writers do not even agree on which half
+        # goes first: here the file is written per block before its entry,
+        # while mirror_untranslatable and retire_orphaned append their entries
+        # first and write the file once at the end. Both orders surface as
+        # TAMPERED, so nothing is silently wrong either way — but they leave
+        # different states behind for a human to recover from (content present
+        # and unrecorded, versus recorded and absent), and picking one means
+        # deciding what a half-finished operation should mean. That decision
+        # is open; see docs/RED-TEAM.md, F7.
         raws = _read_raws(translation_file)
         mapping = block_mapping(ledger, doc, lang)
         target, shifted = _place(raws, mapping, block_index, restored)

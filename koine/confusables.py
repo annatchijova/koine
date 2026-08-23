@@ -113,15 +113,25 @@ def mixed_script_tokens(text: str) -> list[str]:
 
 
 def skeleton(text: str) -> str:
-    """Fold known lookalikes to ASCII, preserving length.
+    """Fold *text* toward the ASCII it is pretending to be.
 
-    Length-preserving so callers can run the same word-boundary regex over the
-    skeleton and the original and have the two answers mean the same thing.
+    Three steps, each closing a different way to write a word that is not the
+    word it renders as: compatibility normalization (fullwidth and other
+    presentation forms), removal of the characters that render as nothing, and
+    the curated lookalike table.
+
+    Dropping the invisibles is what makes this answer the question honestly.
+    Without it a zero-width space inside an ASCII word defeated both halves at
+    once — the term was not found literally, and the word is entirely Latin so
+    it is not mixed-script either — and the binding rule went silent with
+    nothing said about why.
+
+    The result is not length-preserving and is only ever compared as a whole
+    against another skeleton; never align it positionally with the original.
     """
     folded = unicodedata.normalize("NFKC", nfc(text))
-    if len(folded) != len(text):             # NFKC expanded something; not safe
-        folded = nfc(text)
-    return "".join(_FOLD.get(ch, ch) for ch in folded)
+    stripped = "".join(ch for ch in folded if ch not in INVISIBLE)
+    return "".join(_FOLD.get(ch, ch) for ch in stripped)
 
 
 def findings(text: str, where: str) -> list[str]:

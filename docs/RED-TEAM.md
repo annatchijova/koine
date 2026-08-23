@@ -256,6 +256,22 @@ a recorded hash means one exact sequence of bytes.
   authority from exactly these mechanical differences and cannot be the one
   party that does not mention them.
 
+What the comparison actually operates on, pinned by a table test because it
+is exactly the kind of thing that drifts silently:
+
+| source | verdict | why |
+|---|---|---|
+| `commit` | enforced | NFC-normalized exact code points |
+| `Commit`, `COMMIT` | silent | case-sensitive, as `Glossary` documents |
+| `coмmit` (Cyrillic м) | lookalike | curated fold |
+| `ｃｏｍｍｉｔ` | lookalike | NFKC compatibility forms |
+| `com​mit` (ZWSP inside) | lookalike | invisibles removed before folding |
+
+The zero-width row took two passes to close and is worth naming: an invisible
+character inside an ASCII word defeats the literal match *and* is not
+mixed-script, so both detections missed it independently and the binding went
+silent with nothing said. `skeleton` now strips invisibles before folding.
+
 Both detections are deliberately narrow, because a false positive here means
 rejecting honest documentation. ZWJ/ZWNJ (load-bearing in Indic, Arabic,
 Persian and emoji) and the non-breaking space (ordinary French and Spanish
@@ -300,11 +316,27 @@ pipeline writers hold it across the whole read-place-write-append.
 `_write_raws` is now atomic (tmp + `os.replace`) and refuses to write blocks
 that would not read back as the same blocks.
 
-**What this does not fix.** It is not crash-atomic. A process that dies
-between the file write and the ledger append leaves a block whose content no
-longer matches its seal. That is reported as `TAMPERED` and resolved by
-re-adopting. The concurrent-writer half is gone entirely; the crash window is
-documented rather than claimed away.
+**What this does not fix, stated precisely.** A lock is a local guarantee,
+and assuming it composes into atomicity would repeat the exact pattern this
+whole audit is about. It is not crash-atomic, and there are four states a
+crash can leave:
+
+| ledger | file | observed as | recovery |
+|---|---|---|---|
+| old | old | nothing happened | none needed |
+| old | new | `TAMPERED` | content is present and unrecorded |
+| new | old | `TAMPERED` / `UNSOURCED` | recorded and absent |
+| new | new | committed | none needed |
+
+The two middle states are both reported, so nothing is silently wrong — but
+they are not the same thing to recover from, and the three writers do not
+currently agree on which one they produce. `submit_candidate` writes the file
+per block before appending its entry; `mirror_untranslatable` and
+`retire_orphaned` append first and write the file once at the end. That
+asymmetry is deliberate to leave visible rather than paper over: choosing one
+order means deciding what a half-finished operation *means* — an intention
+log, a recoverable transaction, or a state a human resolves — and that is a
+design decision, not a patch. It is open.
 
 ---
 
@@ -364,6 +396,25 @@ project's own documentation being the first thing that would trip it.
 is frozen like any other protected span. `re.sub` does not rescan its own
 replacements, so restoring a literal placeholder is safe.
 
+**Can the parser tell a marker koine produced from one that was in the input?**
+No — and it does not need to, which is the part worth being precise about. A
+protocol metasymbol that can also occur as domain data is a standing invitation
+for syntax to become authority, and the fix does not *preserve* the
+distinction, it **dissolves** it: after `freeze`, no literal marker survives
+into the template. Every marker a model sees is generated and maps to exactly
+one span, the multiset check rejects any the model adds, and the literal is
+restored byte-exact from its span like any other protected text.
+
+```
+source   : koine writes ⟦K0⟧ and also `code` here.
+spans    : ['⟦K0⟧', '`code`']
+template : koine writes ⟦K0⟧ and also ⟦K1⟧ here.
+```
+
+The two `⟦K0⟧` in that trace are different things and the template cannot say
+which is which — because at that layer neither one has domain meaning any
+more.
+
 ---
 
 ## F10 — The pipeline corrupted itself, then named a human
@@ -388,6 +439,17 @@ placement shifted by one. Not repairable through the tool.
 
 This is the direct answer to *"does the system hash exactly the representation
 it later uses to place and interpret the block?"* — it did not.
+
+**Composition.** The related question is whether the write/read transformer
+settles at all: `S₀ → write(S₀) → S₁ → write(S₁) → …`, is there an `Sₙ = Sₙ₊₁`?
+Measured over randomized documents (mixed separators, whitespace-only lines,
+leading and trailing blanks, fences containing blank lines, thematic rules):
+**every one converges in at most one write**, and no block hash changes across
+the normalization. The projection is lossy about whitespace *between* blocks
+and lossless about the blocks themselves, which are what the ledger sealed. A
+transformer that never settled would keep producing files that differ from the
+ones the recorded hashes were taken against, and would interact with the drift
+and tamper states even though each of those is independently correct.
 
 **Fix.** `blocks.as_single_block` returns the one text block a candidate will
 be read back as, or `None`. `submit_candidate` seals and places **that**, so a
@@ -437,7 +499,8 @@ the failure this project exists to prevent.
   both `ledger.<lang>.jsonl` and its anchor can produce a chain that verifies.
   The README already says so: only a copy koine does not control — the remote
   git history — catches that.
-- **Crash atomicity** between the translated file and the ledger (F7).
+- **Crash atomicity** between the translated file and the ledger, and the
+  write-order asymmetry between the three pipeline writers (F7).
 - **Webhook ordering and deduplication** (F8).
 - **Adjacent-prose attacks on protected spans**, above.
 - **Confusable detection is a curated table**, not the full Unicode
