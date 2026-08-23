@@ -18,6 +18,19 @@ content the source never had, and appending to it edits no recorded block,
 so nothing above fires. UNSOURCED is that content; LEGACY_ORPHAN is the
 subset of it that already existed when the pair was adopted.
 
+Two properties hold across all of them, and both were once missing:
+
+- Integrity is derived before drift. A source block that changed says nothing
+  about whether its translation was rewritten, so STALE never short-circuits
+  the tamper check — otherwise one invisible character in the source
+  downgrades an attacker-authored translation to routine drift.
+- Every block koine has a *placement* for is checked against its seal, even
+  the ones it never translates. A mirrored code fence is content koine wrote
+  and sealed; skipping it left the lines a reader copy-pastes and runs as the
+  only unverified bytes in the file. With no placement event there is nothing
+  to check and koine makes no claim, which is the same precondition
+  `_unsourced_states` applies.
+
 A language model may *cause* these states to change by producing candidate
 translations; it can never *declare* a state. That is the whole point.
 """
@@ -137,6 +150,47 @@ def block_mapping(ledger: Ledger, doc: str, lang: str) -> dict[int, int]:
     return out
 
 
+def _placement_broken(ev: dict, tr_blocks: list, what: str) -> str:
+    """Why the recorded translation block fails its seal, or "" when it holds.
+
+    Applied to every block koine has a placement for, translatable or not.
+    A mirrored fence is content koine itself wrote into the translated file
+    and sealed in the ledger; leaving that seal unchecked meant the one part
+    of a README a reader copy-pastes and runs could be rewritten with no
+    state change at all, while `koine verify` still said VERIFIED.
+    """
+    p = ev["payload"]
+    tr_index = p.get("meta", {}).get("translation_block_index", p["block_index"])
+    if tr_index >= len(tr_blocks):
+        return "translated file has fewer blocks than recorded"
+    if seal_text(tr_blocks[tr_index].raw) != p["translation_hash"]:
+        return f"{what} edited outside the pipeline"
+    return ""
+
+
+def _never_translated_state(doc: str, lang: str, b, ev: dict | None,
+                            tr_blocks: list) -> BlockState:
+    """State for a fence or frontmatter block: never translated, still sealed.
+
+    With no placement event koine has no record of this block on the
+    translation side and makes no claim about it -- the same precondition
+    `_unsourced_states` applies. With one, the recorded copy is verified like
+    any other placement, and a source fence that changed after it was
+    mirrored is drift the translated file still has to catch up on.
+    """
+    if ev is None:
+        return BlockState(doc, lang, b.index, NOT_TRANSLATABLE,
+                          detail=f"{b.kind}, never eligible for translation")
+    broken = _placement_broken(ev, tr_blocks, f"mirrored {b.kind}")
+    if broken:
+        return BlockState(doc, lang, b.index, TAMPERED, detail=broken)
+    if ev["payload"]["source_hash"] != b.source_hash:
+        return BlockState(doc, lang, b.index, STALE,
+                          detail=f"source {b.kind} changed after it was mirrored")
+    return BlockState(doc, lang, b.index, NOT_TRANSLATABLE,
+                      detail=f"{b.kind}, never eligible for translation")
+
+
 def derive_states(source_path: str | Path, translation_path: str | Path,
                   lang: str, ledger: Ledger) -> list[BlockState]:
     source_path = Path(source_path)
@@ -152,36 +206,34 @@ def derive_states(source_path: str | Path, translation_path: str | Path,
 
     states: list[BlockState] = []
     for b in src_blocks:
-        if b.kind in NEVER_TRANSLATED_KINDS:
-            states.append(BlockState(
-                doc, lang, b.index, NOT_TRANSLATABLE,
-                detail=f"{b.kind}, never eligible for translation"))
-            continue
-
         key = (doc, lang, b.index)
         ev = events.get(key)
+
+        if b.kind in NEVER_TRANSLATED_KINDS:
+            states.append(_never_translated_state(doc, lang, b, ev, tr_blocks))
+            continue
+
         if ev is None:
             states.append(BlockState(doc, lang, b.index, UNTRANSLATED))
             continue
         p = ev["payload"]
+        # Integrity before drift, always. Deriving STALE first and returning
+        # let an edited source block mask an edited translation block: one
+        # invisible character in the source (a zero-width space, an NFD
+        # decomposition) downgraded any rewrite of the recorded translation
+        # from TAMPERED (exit 2) to STALE (exit 1) -- routine drift, which the
+        # autofix path then silently overwrites. Staleness is a statement
+        # about the source; it can never be evidence about the translation.
+        broken = _placement_broken(ev, tr_blocks, "translated block")
+        if broken:
+            states.append(BlockState(doc, lang, b.index, TAMPERED, detail=broken))
+            continue
         if p["source_hash"] != b.source_hash:
             states.append(BlockState(
                 doc, lang, b.index, STALE,
                 detail="source changed after last translation"))
             continue
         meta = p.get("meta", {})
-        tr_index = meta.get("translation_block_index", b.index)
-        if tr_index >= len(tr_blocks):
-            states.append(BlockState(
-                doc, lang, b.index, TAMPERED,
-                detail="translated file has fewer blocks than recorded"))
-            continue
-        actual = seal_text(tr_blocks[tr_index].raw)
-        if actual != p["translation_hash"]:
-            states.append(BlockState(
-                doc, lang, b.index, TAMPERED,
-                detail="translated block edited outside the pipeline"))
-            continue
         if meta.get("legacy"):
             states.append(BlockState(
                 doc, lang, b.index, LEGACY_UNVERIFIED,

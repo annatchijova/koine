@@ -26,6 +26,7 @@ import contextlib
 import hashlib
 import json
 import os
+import threading
 from pathlib import Path
 
 from .canonical import canonical_bytes
@@ -58,9 +59,31 @@ class UnsupportedAnchor(Exception):
     pass
 
 
+# One re-entrant lock per chain, per process. flock alone cannot serialize
+# threads that hold separate descriptors *and* let one caller nest the lock,
+# which is what holding it across a whole placement requires.
+_THREAD_LOCKS: dict[str, threading.RLock] = {}
+_THREAD_LOCKS_GUARD = threading.Lock()
+_DEPTH = threading.local()
+
+
 @contextlib.contextmanager
 def _exclusive(path: Path):
-    """Hold an exclusive lock on a sidecar of *path* for the whole append."""
+    """Hold an exclusive lock on a sidecar of *path*, re-entrantly.
+
+    Re-entrant on purpose. The lock originally covered `append` alone, which
+    made the chain safe and left the thing the chain describes unprotected:
+    two concurrent writers each read the translated file, each placed a block,
+    and the second write erased the first while both entries landed. The
+    result was a mapping with two source blocks pointing at one translation
+    index — exactly the state `_place` refuses to create, reached by a route
+    that never consults `_place` — with a chain that verified and a gate that
+    blamed a human for it. Callers now hold this across read-place-write-append
+    as one critical section, and `append` nests inside without deadlocking.
+
+    The RLock serializes threads within the process and permits that nesting;
+    the flock, taken once at the outermost entry, serializes processes.
+    """
     if fcntl is None:  # pragma: no cover - platform dependent
         raise Unlockable(
             "file locking is unavailable on this platform; koine will not "
@@ -68,12 +91,26 @@ def _exclusive(path: Path):
         )
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(path.suffix + ".lock")
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    key = str(lock_path)
+    with _THREAD_LOCKS_GUARD:
+        rlock = _THREAD_LOCKS.setdefault(key, threading.RLock())
+    depths = getattr(_DEPTH, "depths", None)
+    if depths is None:
+        depths = _DEPTH.depths = {}
+
+    rlock.acquire()
+    depths[key] = depths.get(key, 0) + 1
+    fd = None
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        if depths[key] == 1:
+            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+            fcntl.flock(fd, fcntl.LOCK_EX)
         yield
     finally:
-        os.close(fd)
+        depths[key] -= 1
+        if fd is not None:
+            os.close(fd)
+        rlock.release()
 
 
 def _entry_hash(payload: dict, prev_hash: str) -> str:
@@ -131,6 +168,19 @@ class Ledger:
         return es[-1]["audit_hash"] if es else GENESIS
 
     # ---------- write ----------
+    def transaction(self):
+        """Hold this chain's lock across a whole read-place-write-append.
+
+        The ledger and the translated file are two halves of one fact, so the
+        pipeline has to write them under one lock or lose updates between
+        them. This does not make the pair crash-atomic — a process that dies
+        between the file write and the append leaves a block whose content no
+        longer matches its seal, reported as TAMPERED and resolved by
+        re-adopting — but it removes the concurrent-writer half entirely, and
+        an honest TAMPERED beats a silent divergence either way.
+        """
+        return _exclusive(self.path)
+
     def append(self, *, op: str, doc: str, lang: str, block_index: int,
                source_hash: str, translation_hash: str, seq_time: str,
                meta: dict | None = None) -> dict:

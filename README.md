@@ -32,11 +32,18 @@ A translation's state (`CURRENT`, `STALE`, `TAMPERED`, `UNSOURCED`,
 tamper-evident ledger — including *where* each translated block lives, which is read from
 the ledger and never inferred from the source's own block numbering (a
 translation with a banner the source lacks is not index-aligned with it).
+Every block koine has a placement for is checked against its seal, including
+the code fences and frontmatter it copies over verbatim and never translates —
+those are the lines a reader copy-pastes and runs. And a stale source block
+never excuses a check on the translation: integrity is derived before drift,
+so touching the source cannot downgrade a rewritten translation to "drift".
 The fleet's language models:
 
 - receive prose with protected spans (code, URLs, env vars, flags, paths)
   **frozen into placeholders** they cannot alter — restoration is verified
-  byte-for-byte, mechanically;
+  byte-for-byte, mechanically, and a candidate that *invents* a code span,
+  URL, image, HTML tag or path the source never had is rejected too: freezing
+  alone only stops a model from losing a span, never from adding one;
 - can **reject** a candidate translation with findings, but cannot approve
   one — there is no `approve()` tool, because a model's approval would put
   a model back into the trust path;
@@ -54,6 +61,13 @@ any koine code.
 | Source paragraph edited after translation | `STALE` | exit 1 |
 | Doc never translated to a language | `UNTRANSLATED` | exit 1 |
 | Recorded translation block edited by hand | `TAMPERED` | exit 2 |
+| Mirrored code fence or frontmatter edited in the translation | `TAMPERED` | exit 2 |
+| Two recorded blocks swapped, neither one altered | `TAMPERED` | exit 2 |
+| Source code fence changed after it was mirrored | `STALE` | exit 1 |
+| Candidate translation invents a code span, URL or path | rejected | never promoted |
+| Candidate that would not read back as one block | rejected | never promoted |
+| Binding glossary term present only as a lookalike | violation | exit 1 |
+| Zero-width, bidi or mixed-script text in a doc | reported | exit 1 |
 | Content added to a translation the source never had | `UNSOURCED` | exit 2 |
 | Ledger rewritten or reordered | broken chain | exit 2 |
 | Ledger tail truncated or rebuilt | anchor mismatch | exit 2 |
@@ -61,6 +75,9 @@ any koine code.
 | Unreviewed machine translation | `MACHINE_ONLY` | visible, allowed by default |
 | Adopted legacy pair, meaning never verified | `LEGACY_UNVERIFIED` | visible, allowed by default |
 | Orphan block present when the pair was adopted | `LEGACY_ORPHAN` | visible, allowed by default |
+
+koine has been red-teamed against its own guarantees, and what that found
+— including what held — is written down in [docs/RED-TEAM.md](docs/RED-TEAM.md).
 
 `MACHINE_ONLY` is koine's honest answer to languages the maintainer cannot
 review: the translation ships, labeled as machine-maintained, never

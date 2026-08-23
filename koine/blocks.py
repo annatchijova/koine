@@ -7,6 +7,10 @@ never translated at all. Inside translatable blocks, *protected spans*
 placeholders before any model sees the text, and must be restored
 byte-identically afterwards — this is checked mechanically, and a candidate
 translation that fails restoration is rejected without any model opinion.
+
+Restoration is only half of it. Freezing is one-directional: it stops a model
+from losing or altering a span the source had, and on its own says nothing
+about spans the model *invents*. `invented_spans` is the other half.
 """
 from __future__ import annotations
 
@@ -18,18 +22,34 @@ from .canonical import seal_text
 PLACEHOLDER = "\u27e6K{n}\u27e7"  # ⟦K0⟧ ⟦K1⟧ … — unlikely to appear in prose
 _PLACEHOLDER_RE = re.compile(r"\u27e6K(\d+)\u27e7")
 
+_INLINE_CODE = re.compile(r"`[^`\n]+`")
+_IMAGE = re.compile(r"!\[[^\]\n]*\]\([^)\n]*\)")            # images & badges, whole
+_URL = re.compile(r"https?://[^\s)\]>]*[^\s)\]>.,;:!?]")     # sans trailing punct.
+_ANCHOR = re.compile(r"\(#[^)\s]+\)")                        # relative (#section)
+_HTML_TAG = re.compile(r"</?[A-Za-z][^>\n]*>")
+_ENV_VAR = re.compile(r"(?<![\w.])[A-Z][A-Z0-9_]{2,}(?:=[^\s]+)?")
+_CLI_FLAG = re.compile(r"(?<!\w)--?[A-Za-z][\w-]+")
+_FILE_PATH = re.compile(r"(?<![\w/])(?:\.{0,2}/)[\w./-]+")
+
 # Order matters: earlier patterns win. Each pattern captures a span that a
 # translator must not touch.
-_PROTECTED_PATTERNS = [
-    re.compile(r"`[^`\n]+`"),                          # inline code
-    re.compile(r"!\[[^\]\n]*\]\([^)\n]*\)"),           # images & badges, whole
-    re.compile(r"https?://[^\s)\]>]*[^\s)\]>.,;:!?]"), # URLs (sans trailing punct.)
-    re.compile(r"\(#[^)\s]+\)"),                       # relative anchors (#section)
-    re.compile(r"</?[A-Za-z][^>\n]*>"),                # inline HTML tags
-    re.compile(r"(?<![\w.])[A-Z][A-Z0-9_]{2,}(?:=[^\s]+)?"),  # ENV_VARS / CONSTANTS
-    re.compile(r"(?<!\w)--?[A-Za-z][\w-]+"),           # CLI flags
-    re.compile(r"(?<![\w/])(?:\.{0,2}/)[\w./-]+"),     # file paths
-]
+#
+# _PLACEHOLDER_RE comes first so that prose which itself contains ⟦Kn⟧ — this
+# project's own documentation, for one — is frozen like any other protected
+# span instead of colliding with the generated placeholders. Without it such a
+# block could never be translated at all: thaw saw a placeholder freeze never
+# emitted, rejected every candidate, and the block stayed UNTRANSLATED with
+# the gate red forever and no operator recourse. re.sub does not rescan its
+# own replacements, so restoring a literal ⟦Kn⟧ is safe.
+_PROTECTED_PATTERNS = [_PLACEHOLDER_RE, _INLINE_CODE, _IMAGE, _URL, _ANCHOR,
+                       _HTML_TAG, _ENV_VAR, _CLI_FLAG, _FILE_PATH]
+
+# Span classes a translator has no reason to *introduce*. ENV_VARS/CONSTANTS
+# and CLI flags are deliberately absent: ordinary prose in many target
+# languages carries all-caps words (NOTA, ВНИМАНИЕ) and hyphenated compounds,
+# and rejecting an honest translation over one of those would be worse than
+# missing an invented flag -- which the source diff still shows a reviewer.
+_UNINVENTABLE_PATTERNS = [_INLINE_CODE, _IMAGE, _URL, _HTML_TAG, _FILE_PATH]
 
 _FENCE_RE = re.compile(r"^(```|~~~)")
 
@@ -67,9 +87,26 @@ def split_blocks(markdown: str) -> list[Block]:
     fence_marker = ""
     start = 0
 
-    # frontmatter: only at byte 0 of the document
-    if lines and lines[0].strip() == "---":
+    # Frontmatter: only at byte 0 of the document, and only when it closes
+    # before the first blank line.
+    #
+    # Scanning for the closing delimiter anywhere in the document made a
+    # one-line deletion catastrophic: drop the closing `---` of a real
+    # frontmatter block and the next thematic break in the body closes it
+    # instead, swallowing arbitrary prose into a block that is never
+    # translated and, until now, never checked. Every generator that reads
+    # frontmatter (Jekyll, Hugo, Docusaurus, MkDocs) treats it as one
+    # contiguous document at the top of the file, so a blank line ends the
+    # search. This fails visibly: frontmatter koine does not recognize becomes
+    # ordinary translatable text, which shows up in `koine status`, instead of
+    # prose that silently ships untranslated while the gate says all current.
+    #
+    # A UTF-8 BOM is tolerated for the delimiter test only -- it stays inside
+    # the block's raw text, which is what gets hashed and mirrored.
+    if lines and lines[0].lstrip("\ufeff").strip() == "---":
         for j in range(1, len(lines)):
+            if lines[j].strip() == "":
+                break
             if lines[j].strip() in ("---", "..."):
                 blocks.append(Block(index=0, kind="frontmatter",
                                     raw="\n".join(lines[: j + 1])))
@@ -102,6 +139,31 @@ def split_blocks(markdown: str) -> list[Block]:
     return blocks
 
 
+def _scan(text: str, patterns: list) -> list[tuple[int, int]]:
+    """Non-overlapping (start, end) spans, one left-to-right pass over *text*.
+
+    Earliest start wins; on a tie the longer span wins; on a full tie the
+    earlier pattern keeps it. Shared so that "what counts as a protected span"
+    has exactly one definition for both freezing and injection detection.
+    """
+    spans: list[tuple[int, int]] = []
+    pos = 0
+    while pos < len(text):
+        best: tuple[int, int] | None = None
+        for pattern in patterns:
+            m = pattern.search(text, pos)
+            if m is None:
+                continue
+            if best is None or m.start() < best[0] or (
+                    m.start() == best[0] and m.end() > best[1]):
+                best = (m.start(), m.end())
+        if best is None:
+            break
+        spans.append(best)
+        pos = best[1]
+    return spans
+
+
 def freeze(text: str) -> FrozenText:
     """Replace protected spans with placeholders. Deterministic, no model.
 
@@ -116,25 +178,30 @@ def freeze(text: str) -> FrozenText:
     spans: list[str] = []
     out: list[str] = []
     pos = 0
-    while pos < len(text):
-        best: tuple[int, int] | None = None
-        for pattern in _PROTECTED_PATTERNS:
-            m = pattern.search(text, pos)
-            if m is None:
-                continue
-            # earliest start wins; on a tie the longer span wins; on a full
-            # tie the earlier pattern keeps it (loop order)
-            if best is None or m.start() < best[0] or (
-                    m.start() == best[0] and m.end() > best[1]):
-                best = (m.start(), m.end())
-        if best is None:
-            out.append(text[pos:])
-            break
-        out.append(text[pos:best[0]])
-        spans.append(text[best[0]:best[1]])
+    for start, end in _scan(text, _PROTECTED_PATTERNS):
+        out.append(text[pos:start])
+        spans.append(text[start:end])
         out.append(PLACEHOLDER.format(n=len(spans) - 1))
-        pos = best[1]
+        pos = end
+    out.append(text[pos:])
     return FrozenText(template="".join(out), spans=spans)
+
+
+def invented_spans(translated_template: str) -> list[str]:
+    """Protected-span constructs the model wrote itself, in its own template.
+
+    freeze/thaw is one-directional. It guarantees no source span is lost or
+    altered and says nothing about what else the model writes, so a translator
+    that appends ``curl … | sudo sh`` invented a span the source never had and
+    every mechanical check passed it through to CURRENT.
+
+    Run on the *template*, not on the restored text: there every span that
+    came from the source is still a placeholder, so nothing inherited can be
+    mistaken for an invention. Only the classes in _UNINVENTABLE_PATTERNS are
+    reported -- see the note there on what is deliberately left out.
+    """
+    return [translated_template[a:b]
+            for a, b in _scan(translated_template, _UNINVENTABLE_PATTERNS)]
 
 
 def thaw(frozen: FrozenText, translated_template: str) -> str:
@@ -154,6 +221,29 @@ def thaw(frozen: FrozenText, translated_template: str) -> str:
         return frozen.spans[int(m.group(1))]
 
     return _PLACEHOLDER_RE.sub(_restore, translated_template)
+
+
+def as_single_block(text: str) -> "Block | None":
+    """The one text block *text* will be read back as, or None if it is not one.
+
+    A block is the unit of sealing *and* of placement, and the two only agree
+    when a candidate survives the write/read round trip unchanged. A model
+    that answers a one-paragraph source with two paragraphs used to be
+    promoted: the blank line split the text into two blocks on read-back, the
+    sealed hash matched nothing in the file, every later placement shifted by
+    one, and koine's own gate then reported TAMPERED and UNSOURCED — blaming a
+    human for damage the pipeline had just done to itself, with no way to fix
+    it through the tool.
+
+    Returns the block rather than a bool so callers seal and place exactly the
+    bytes split_blocks will hand back, not the bytes the model happened to
+    send (a stray trailing newline is absorbed here, not left to desynchronize
+    the hash from the file).
+    """
+    blocks = split_blocks(text)
+    if len(blocks) != 1 or blocks[0].kind != "text":
+        return None
+    return blocks[0]
 
 
 def verify_protected_spans(source: str, translation: str) -> list[str]:
