@@ -12,6 +12,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from . import confusables
 from . import state as st
 from .glossary import Glossary
 from .ledger import Ledger, verify_chain
@@ -77,6 +78,18 @@ def run_gate(source: str, translations: dict, ledger_path: str,
             for v in glossary.violations(src_text, tr_text, lang):
                 print(f"[{lang}] glossary: {v}")
                 worst = max(worst, 1)
+            # Text engineered so that what a reader sees and what koine hashes
+            # are different things. Not an integrity failure — no seal is
+            # broken — but koine derives its authority from exactly these
+            # mechanical differences, so it cannot be the one party that does
+            # not mention them.
+            for f in confusables.findings(tr_text, "translation"):
+                print(f"[{lang}] {f}")
+                worst = max(worst, 1)
+
+    for f in confusables.findings(src_text, "source"):
+        print(f)
+        worst = max(worst, 1)
 
     if worst == 0:
         # "all current" is a claim, so make it only when it is true: blocks

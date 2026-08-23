@@ -54,6 +54,12 @@ def verify_signature(secret: str, payload: bytes, signature_header: str | None) 
         raise InvalidSignature("signature mismatch")
 
 
+# GitHub sends at most this many commits in a push payload and gives no flag
+# saying it truncated. A full page therefore means "at least this many", not
+# "exactly this many".
+GITHUB_COMMIT_PAGE = 20
+
+
 def extract_changed_paths(push_payload: dict) -> set[str]:
     """Union of added/removed/modified paths across every commit in a GitHub
     push event payload."""
@@ -62,6 +68,47 @@ def extract_changed_paths(push_payload: dict) -> set[str]:
         for key in ("added", "removed", "modified"):
             changed.update(commit.get(key, []))
     return changed
+
+
+def changed_paths_complete(push_payload: dict) -> bool:
+    """Whether the payload's commit list can be trusted to be the whole push.
+
+    It cannot when GitHub truncated it, and GitHub does not say when it did.
+    Getting this wrong in the optimistic direction is the dangerous one: a
+    large push whose one relevant commit fell off the list matched no tracked
+    path, so no doc was affected, so the queue came back empty and the drift
+    was never reported at all. Silence, not an error.
+    """
+    return len(push_payload.get("commits") or []) < GITHUB_COMMIT_PAGE
+
+
+def head_sha(repo_root: Path) -> str | None:
+    """The commit the working tree is actually on, or None if unknowable.
+
+    Read from .git directly rather than shelled out to git: this module is
+    stdlib-only so it can run as a small always-on service, and a missing git
+    binary should degrade to "unknown", not to a traceback.
+    """
+    git = Path(repo_root) / ".git"
+    try:
+        content = (git / "HEAD").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not content.startswith("ref:"):
+        return content or None
+    ref = content[4:].strip()
+    try:
+        return (git / ref).read_text(encoding="utf-8").strip() or None
+    except OSError:
+        pass
+    try:
+        for line in (git / "packed-refs").read_text(encoding="utf-8").splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[1] == ref:
+                return parts[0]
+    except OSError:
+        pass
+    return None
 
 
 @dataclass
@@ -112,13 +159,33 @@ def handle_push(*, secret: str, signature_header: str | None, body: bytes,
     verify_signature(secret, body, signature_header)
     payload = json.loads(body.decode("utf-8"))
     changed = extract_changed_paths(payload)
+    complete = changed_paths_complete(payload)
+
+    # With a truncated commit list the changed-path set is a lower bound, so
+    # filtering by it can only drop real work. Recompute everything instead:
+    # doing redundant work is recoverable, reporting no drift because the
+    # relevant commit fell off the payload is not.
+    affected = docs_affected(docs, changed) if complete else list(docs)
+
     queue: list[WorkItem] = []
-    for doc in docs_affected(docs, changed):
+    for doc in affected:
         queue.extend(compute_work_queue(doc, repo_root))
     ref = payload.get("ref", "") or ""
     branch = ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else None
+
+    # The queue is derived from the working tree on disk, never from the
+    # commit the event names -- nothing here fetches or checks anything out.
+    # Reporting only the event's sha therefore attributed a disk-derived
+    # answer to a commit koine never read: the same event replayed after the
+    # disk changed produced a different queue under the same sha, and an event
+    # delivered out of order reported its successor's content under its own.
+    # koine cannot fix the ordering from here, but it can stop claiming an
+    # authority it does not have.
+    derived = head_sha(Path(repo_root))
+    event_sha = payload.get("after")
     return {
         "changed_paths": sorted(changed),
+        "changed_paths_complete": complete,
         "work_queue": [
             {"doc": i.doc, "lang": i.lang, "block_index": i.block_index,
              "reason": i.reason}
@@ -129,7 +196,14 @@ def handle_push(*, secret: str, signature_header: str | None, body: bytes,
         "context": {
             "repo": (payload.get("repository") or {}).get("full_name"),
             "branch": branch,
-            "sha": payload.get("after"),
+            "sha": event_sha,
+            "event_sha": event_sha,
+            "derived_from_sha": derived,
+            # None means koine could not tell; only True is a positive claim
+            "derived_matches_event": (
+                None if (derived is None or not event_sha)
+                else derived == event_sha),
+            "forced": bool(payload.get("forced")),
         },
     }
 

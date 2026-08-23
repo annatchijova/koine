@@ -33,8 +33,16 @@ _FILE_PATH = re.compile(r"(?<![\w/])(?:\.{0,2}/)[\w./-]+")
 
 # Order matters: earlier patterns win. Each pattern captures a span that a
 # translator must not touch.
-_PROTECTED_PATTERNS = [_INLINE_CODE, _IMAGE, _URL, _ANCHOR, _HTML_TAG,
-                       _ENV_VAR, _CLI_FLAG, _FILE_PATH]
+#
+# _PLACEHOLDER_RE comes first so that prose which itself contains ⟦Kn⟧ — this
+# project's own documentation, for one — is frozen like any other protected
+# span instead of colliding with the generated placeholders. Without it such a
+# block could never be translated at all: thaw saw a placeholder freeze never
+# emitted, rejected every candidate, and the block stayed UNTRANSLATED with
+# the gate red forever and no operator recourse. re.sub does not rescan its
+# own replacements, so restoring a literal ⟦Kn⟧ is safe.
+_PROTECTED_PATTERNS = [_PLACEHOLDER_RE, _INLINE_CODE, _IMAGE, _URL, _ANCHOR,
+                       _HTML_TAG, _ENV_VAR, _CLI_FLAG, _FILE_PATH]
 
 # Span classes a translator has no reason to *introduce*. ENV_VARS/CONSTANTS
 # and CLI flags are deliberately absent: ordinary prose in many target
@@ -213,6 +221,29 @@ def thaw(frozen: FrozenText, translated_template: str) -> str:
         return frozen.spans[int(m.group(1))]
 
     return _PLACEHOLDER_RE.sub(_restore, translated_template)
+
+
+def as_single_block(text: str) -> "Block | None":
+    """The one text block *text* will be read back as, or None if it is not one.
+
+    A block is the unit of sealing *and* of placement, and the two only agree
+    when a candidate survives the write/read round trip unchanged. A model
+    that answers a one-paragraph source with two paragraphs used to be
+    promoted: the blank line split the text into two blocks on read-back, the
+    sealed hash matched nothing in the file, every later placement shifted by
+    one, and koine's own gate then reported TAMPERED and UNSOURCED — blaming a
+    human for damage the pipeline had just done to itself, with no way to fix
+    it through the tool.
+
+    Returns the block rather than a bool so callers seal and place exactly the
+    bytes split_blocks will hand back, not the bytes the model happened to
+    send (a stray trailing newline is absorbed here, not left to desynchronize
+    the hash from the file).
+    """
+    blocks = split_blocks(text)
+    if len(blocks) != 1 or blocks[0].kind != "text":
+        return None
+    return blocks[0]
 
 
 def verify_protected_spans(source: str, translation: str) -> list[str]:

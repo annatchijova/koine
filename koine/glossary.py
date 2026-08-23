@@ -18,6 +18,8 @@ import re
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
+from . import confusables
+
 GLOSSARY_VERSION = 1
 KEEP_VERBATIM = "@same"
 
@@ -78,17 +80,37 @@ class Glossary:
     def violations(self, source: str, translation: str, lang: str) -> list[str]:
         """Binding terms present in *source* whose required rendering for
         *lang* is absent from *translation*. Whole-word match on the source
-        side to avoid substring false positives."""
+        side to avoid substring false positives.
+
+        Both sides are compared NFC-normalized: a term written with combining
+        marks instead of precomposed ones renders identically and used to make
+        the rule silently not apply. A term the source carries only as a
+        lookalike — one Cyrillic character inside an ASCII word — is reported
+        as its own finding rather than passed over: the rule cannot be
+        enforced against text that is not the term, and the one place a human
+        made a binding decision is the last place to fail quietly.
+        """
+        source_n = confusables.nfc(source)
+        translation_n = confusables.nfc(translation)
+        source_skel = confusables.skeleton(source)
         out = []
         for e in self.entries:
             if e.status != "binding":
                 continue
-            if not re.search(rf"(?<!\w){re.escape(e.term)}(?!\w)", source):
+            term = confusables.nfc(e.term)
+            pattern = rf"(?<!\w){re.escape(term)}(?!\w)"
+            if not re.search(pattern, source_n):
+                skel_pattern = rf"(?<!\w){re.escape(confusables.skeleton(e.term))}(?!\w)"
+                if re.search(skel_pattern, source_skel):
+                    out.append(
+                        f"{e.term!r} appears in the source only as a lookalike "
+                        f"(confusable characters); the binding cannot be "
+                        f"enforced against text that is not the term")
                 continue
             required = e.renderings.get(lang)
             if required is None:
                 continue
-            needle = e.term if required == KEEP_VERBATIM else required
-            if needle not in translation:
+            needle = confusables.nfc(e.term if required == KEEP_VERBATIM else required)
+            if needle not in translation_n:
                 out.append(f"{e.term!r} must appear as {needle!r} in {lang}")
         return out

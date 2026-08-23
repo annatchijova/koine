@@ -65,6 +65,9 @@ any koine code.
 | Two recorded blocks swapped, neither one altered | `TAMPERED` | exit 2 |
 | Source code fence changed after it was mirrored | `STALE` | exit 1 |
 | Candidate translation invents a code span, URL or path | rejected | never promoted |
+| Candidate that would not read back as one block | rejected | never promoted |
+| Binding glossary term present only as a lookalike | violation | exit 1 |
+| Zero-width, bidi or mixed-script text in a doc | reported | exit 1 |
 | Content added to a translation the source never had | `UNSOURCED` | exit 2 |
 | Ledger rewritten or reordered | broken chain | exit 2 |
 | Ledger tail truncated or rebuilt | anchor mismatch | exit 2 |
@@ -72,6 +75,9 @@ any koine code.
 | Unreviewed machine translation | `MACHINE_ONLY` | visible, allowed by default |
 | Adopted legacy pair, meaning never verified | `LEGACY_UNVERIFIED` | visible, allowed by default |
 | Orphan block present when the pair was adopted | `LEGACY_ORPHAN` | visible, allowed by default |
+
+koine has been red-teamed against its own guarantees, and what that found
+— including what held — is written down in [docs/RED-TEAM.md](docs/RED-TEAM.md).
 
 `MACHINE_ONLY` is koine's honest answer to languages the maintainer cannot
 review: the translation ships, labeled as machine-maintained, never
