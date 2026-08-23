@@ -18,7 +18,8 @@ from __future__ import annotations
 import datetime as _dt
 from pathlib import Path
 
-from ..blocks import Block, freeze, split_blocks, thaw, verify_protected_spans
+from ..blocks import (Block, freeze, invented_spans, split_blocks, thaw,
+                      verify_protected_spans)
 from ..canonical import seal_text
 from ..glossary import Glossary
 from ..ledger import Ledger
@@ -265,22 +266,37 @@ def submit_candidate(*, source_path: str, block_index: int, lang: str,
     except ValueError as e:
         raise CandidateRejected([f"protected spans: {e}"])
 
-    # 2. every protected span byte-identical in the final text
+    # 2. the model may not invent protected spans of its own. thaw guarantees
+    #    only that nothing from the source was lost or altered; it says
+    #    nothing about what else the model wrote, so a translator that
+    #    appended its own `curl … | sudo sh` cleared every check below and was
+    #    promoted to CURRENT. Checked on the template, where anything that
+    #    came from the source is still a placeholder.
+    invented = invented_spans(translated_template)
+    if invented:
+        reasons.append(f"protected spans the source never had: {invented}")
+
+    # 3. redundant assertion that every source span survived restoration.
+    #    thaw already guarantees this — it rejects any placeholder multiset
+    #    that is not exactly the expected one and then substitutes all of
+    #    them — so this can fire only if thaw itself regresses. Kept as a
+    #    cheap tripwire on that, not as an independent guarantee: it is not
+    #    one, and describing it as one overstated what is verified.
     missing = verify_protected_spans(b.raw, restored)
     if missing:
         reasons.append(f"spans missing after restore: {missing}")
 
-    # 3. binding glossary terms honored
+    # 4. binding glossary terms honored
     reasons.extend(glossary.violations(b.raw, restored, lang))
 
-    # 4. an unresolved reviewer rejection blocks promotion
+    # 5. an unresolved reviewer rejection blocks promotion
     if reviewer_rejections:
         reasons.append(f"reviewer rejections open: {reviewer_rejections}")
 
     if reasons:
         raise CandidateRejected(reasons)
 
-    # 5. place the translated block at the slot the ledger says it owns —
+    # 6. place the translated block at the slot the ledger says it owns —
     #    never at the source's own index, which an adopted translation does
     #    not share (see _place)
     doc = Path(source_path).as_posix()
