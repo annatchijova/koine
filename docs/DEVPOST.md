@@ -79,10 +79,14 @@ guards.
 
 ## Honest status (what is verified vs. what is built)
 
-- **Verified this build:** 110 automated tests pass; the gate service is deployed to
+- **Verified this build:** 172 automated tests pass; the gate service is deployed to
   Cloud Run and its `/`, `/livez`, and `/api/snapshot` endpoints return 200 over the
   public URL; the dashboard is confirmed read-only by a test that asserts rendering
   never writes to the store; the webhook rejects a bad signature (401) live.
+- **Adversarially hardened:** the identity guarantees were red-teamed against
+  homoglyph and Unicode-confusable attacks, index-alignment forgery, and ledger
+  reordering; the attempts and the closed gaps are written up in `docs/RED-TEAM.md`,
+  with a dedicated regression suite (`tests/test_identity_gaps.py`).
 - **The autonomous loop, proven on a real pull request:** a PR that edited the source
   drove the full cycle end to end — koine commented on the PR with the block that went
   stale and failed the check red, the ADK/Gemini fleet then retranslated that block
@@ -118,3 +122,5 @@ check that would have been a confident half-truth.
 - Live gate service: https://koine-gate-1028999311218.us-central1.run.app
 - Repository: https://github.com/annatchijova/koine
 - Architecture diagram: `docs/architecture.html` in the repo (and a Mermaid version in the README)
+- Red-team writeup: `docs/RED-TEAM.md` in the repo
+- Demo script: `docs/DEMO-SCRIPT.md` in the repo
