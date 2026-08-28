@@ -15,6 +15,18 @@ permissions:
 jobs:
   drift:
     runs-on: ubuntu-latest
+    # Email/Slack fire automatically from the notify step when these are set.
+    # Configure them as repo Actions secrets; absent ones are simply skipped.
+    env:
+      KOINE_SMTP_HOST: ${{ secrets.KOINE_SMTP_HOST }}
+      KOINE_SMTP_PORT: ${{ secrets.KOINE_SMTP_PORT }}
+      KOINE_SMTP_SSL: ${{ secrets.KOINE_SMTP_SSL }}
+      KOINE_SMTP_STARTTLS: ${{ secrets.KOINE_SMTP_STARTTLS }}
+      KOINE_SMTP_USER: ${{ secrets.KOINE_SMTP_USER }}
+      KOINE_SMTP_PASSWORD: ${{ secrets.KOINE_SMTP_PASSWORD }}
+      KOINE_MAIL_FROM: ${{ secrets.KOINE_MAIL_FROM }}
+      KOINE_MAIL_TO: ${{ secrets.KOINE_MAIL_TO }}
+      KOINE_SLACK_WEBHOOK_URL: ${{ secrets.KOINE_SLACK_WEBHOOK_URL }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
