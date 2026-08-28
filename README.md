@@ -1,5 +1,15 @@
 # koine
 
+<p align="center">
+  <img src="docs/koine-logo.png" alt="koine" width="640">
+</p>
+
+<p align="center">
+  <b><a href="https://koine-gate-1028999311218.us-central1.run.app/">Live demo</a></b> on Google Cloud Run
+  &nbsp;·&nbsp; <a href="https://koine-gate-1028999311218.us-central1.run.app/architecture">Architecture</a>
+  &nbsp;·&nbsp; <a href="https://koine-gate-1028999311218.us-central1.run.app/deck">Deck</a>
+</p>
+
 **Multilingual repos that cannot silently lie.** When a source doc changes,
 koine detects the drift, queues the affected blocks, proposes translations,
 reviews them adversarially, and blocks release until the ledger is honest.
@@ -351,7 +361,10 @@ flowchart LR
 ```
 
 A rendered, browsable version of this diagram is in
-[`docs/architecture.html`](docs/architecture.html).
+[`docs/architecture.html`](docs/architecture.html), and served live on Cloud Run at
+[`/architecture`](https://koine-gate-1028999311218.us-central1.run.app/architecture):
+
+[![koine system architecture](docs/architecture-preview.png)](https://koine-gate-1028999311218.us-central1.run.app/architecture)
 
 The model lives inside the fleet, which only *proposes*: every candidate is
 re-checked mechanically before `submit_candidate` seals it into the ledger, so
