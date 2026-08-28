@@ -539,6 +539,7 @@ PAGE_HTML = """<!doctype html>
   <span id="overall" class="badge">...</span>
   <span class="sub">tamper-evident ledger &middot; LLM out of the decision path</span>
   <span class="spacer"></span>
+  <a class="themebtn" href="/architecture" style="text-decoration:none" aria-label="view the system architecture diagram">Architecture</a>
   <button id="themebtn" class="themebtn" type="button" aria-label="toggle light or dark theme"></button>
 </header>
 <main>
