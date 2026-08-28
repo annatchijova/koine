@@ -13,5 +13,8 @@ dev = ["pytest"]
 [tool.setuptools.packages.find]
 include = ["koine", "koine.*"]
 
+[tool.setuptools.package-data]
+koine = ["architecture.html"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
