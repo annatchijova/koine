@@ -14,7 +14,7 @@ dev = ["pytest"]
 include = ["koine", "koine.*"]
 
 [tool.setuptools.package-data]
-koine = ["architecture.html"]
+koine = ["architecture.html", "deck.html", "favicon.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
