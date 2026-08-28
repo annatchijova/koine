@@ -33,6 +33,14 @@ _MAX_PATHS = 20
 _MAX_ITEMS_PER_LANG = 50
 _TIMEOUT = 10
 
+# Plain-language "why" for each drift reason, so a report explains *why* a block
+# is out of date instead of only printing its state code. The mechanical work
+# queue yields only these two reasons (see webhook.compute_work_queue).
+_WHY = {
+    "STALE": "source edited after the translation was sealed",
+    "UNTRANSLATED": "no translation exists for this block yet",
+}
+
 
 def _esc(s: str) -> str:
     """Neutralize an untrusted string for safe embedding in a message: drop
@@ -70,7 +78,10 @@ def format_report(changed_paths, work_queue, *, repo=None, branch=None) -> Repor
            f"A push to {where} left {n} translation block(s) out of date:", ""]
     for lang in sorted(by_lang):
         items = by_lang[lang][:_MAX_ITEMS_PER_LANG]
-        rendered = ", ".join(f"block {i['block_index']} ({i['reason']})" for i in items)
+        rendered = ", ".join(
+            f"block {i['block_index']} ({i['reason']}"
+            + (f" — {_WHY[i['reason']]}" if i['reason'] in _WHY else "") + ")"
+            for i in items)
         extra = len(by_lang[lang]) - len(items)
         if extra > 0:
             rendered += f", and {extra} more"

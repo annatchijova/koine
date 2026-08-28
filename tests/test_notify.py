@@ -22,7 +22,7 @@ def test_report_summarizes_queue_by_language():
     r = format_report(["README.md"], QUEUE, repo="annatchijova/koine", branch="main")
     assert r.count == 3
     assert "annatchijova/koine@main" in r.text
-    assert "block 1 (STALE)" in r.markdown
+    assert "block 1 (STALE — source edited after the translation was sealed)" in r.markdown
     assert "es" in r.markdown and "ru" in r.markdown
     # the narration must state the model was not consulted
     assert "model was not consulted" in r.text

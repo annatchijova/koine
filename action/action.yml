@@ -37,7 +37,7 @@ runs:
   steps:
     - id: install
       shell: bash
-      run: pip install --quiet koine || pip install --quiet -e ${{ github.action_path }}/..
+      run: pip install --quiet -e ${{ github.action_path }}/.. || pip install --quiet koine
 
     # Report drift on the PR first, so the comment appears even when the gate
     # below fails the check. Slack/email fire too if their env vars are set on
