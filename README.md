@@ -10,14 +10,20 @@
   &nbsp;·&nbsp; <a href="https://koine-gate-1028999311218.us-central1.run.app/deck">Deck</a>
 </p>
 
-**Multilingual repos that cannot silently lie.** When a source doc changes,
-koine detects the drift, queues the affected blocks, proposes translations,
-reviews them adversarially, and blocks release until the ledger is honest.
-It keeps a repository's documentation synchronized across languages — not by
-translating harder, but by making it *mechanically impossible* for a stale or
-edited translation to claim it is current. An agent fleet does the work; **no
-model ever decides what counts as up to date.** State is derived from hashes
-alone.
+**If you keep a repo's docs in more than one language, you already know the
+pain.** You change the English README, and now the Spanish one is quietly wrong
+— out of date in ways you cannot even see, still telling readers something that
+is no longer true. Keeping translations in sync by hand is a constant, low-grade
+stress, and the moment you stop being perfect about it, your docs start lying.
+(This is a problem the author lives every day, maintaining repos across
+languages.)
+
+koine makes that **mechanically impossible.** When a source doc changes, it
+detects the drift, queues the affected blocks, proposes translations, reviews
+them adversarially, and **blocks release until the ledger is honest** — so a
+stale or edited translation can never claim it is current. An agent fleet does
+the work; **no model ever decides what counts as up to date.** State is derived
+from hashes alone.
 
 ## Judge shortcut
 
