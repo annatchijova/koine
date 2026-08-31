@@ -1,0 +1,7 @@
+# koine is a Python project. The HTML files below are self-contained
+# presentation and documentation assets — a pitch deck (with embedded
+# images) and architecture pages — not application source. Exclude them
+# from GitHub's language statistics so the language bar reflects the code.
+koine/deck.html          linguist-generated=true
+koine/architecture.html  linguist-documentation=true
+docs/architecture.html   linguist-documentation=true
