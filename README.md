@@ -21,6 +21,19 @@ video).
   <img src="visual/koine2.png" alt="koine-gate on Cloud Run" width="440">
 </p>
 
+## Proof it runs on GitHub Actions
+
+koine's real home is CI. The drift gate
+(`.github/workflows/koine-docs.yml`) runs on every pull request that touches the
+watched docs: it comments the stale translation blocks on the PR and fails the
+check red until they are retranslated — no human decides what counts as up to
+date. Live on this repo, not a mockup.
+
+<p align="center">
+  <img src="visual/koine-actions.png" alt="koine drift gate running in GitHub Actions" width="440">
+  <img src="visual/koine-gate-blocks.png" alt="koine commenting the stale blocks on a pull request" width="440">
+</p>
+
 **If you keep a repo's docs in more than one language, you already know the
 pain.** You change the English README, and now the Spanish one is quietly wrong
 — out of date in ways you cannot even see, still telling readers something that
