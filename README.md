@@ -10,6 +10,17 @@
   &nbsp;·&nbsp; <a href="https://koine-gate-1028999311218.us-central1.run.app/deck">Deck</a>
 </p>
 
+## Proof it runs on Google Cloud
+
+koine-gate live on **Cloud Run** (`us-central1`), powered by **Vertex AI (Gemini
+3.5)** — the backend running in the Google Cloud Console (frames from the demo
+video).
+
+<p align="center">
+  <img src="visual/koine1.png" alt="koine-gate on Cloud Run — metrics" width="440">
+  <img src="visual/koine2.png" alt="koine-gate on Cloud Run" width="440">
+</p>
+
 **If you keep a repo's docs in more than one language, you already know the
 pain.** You change the English README, and now the Spanish one is quietly wrong
 — out of date in ways you cannot even see, still telling readers something that
