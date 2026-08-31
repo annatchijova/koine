@@ -136,6 +136,32 @@ as the remote git history, does that. A chain with no anchor is reported as
 Tool contracts are strictly disjoint (`koine/agents/contracts.py`); the only
 writers to the ledger are pipeline functions that run mechanical checks first.
 
+**These are real Gemini calls, not mocks.** `koine translate` (non-`--dry-run`)
+wires the four agents on `gemini-3.5-flash` through Google ADK and issues live
+`generateContent` requests — the translator drafts and the reviewer critiques
+per block, so N pending blocks make 2×N model calls. The always-on `koine-gate`
+service is the deterministic split: it is stdlib-only, carries no ADK dependency
+and no Gemini credential, and never calls a model — by design, so a model can
+never influence a sealed verdict. Only the credentialed fleet (the Cloud Run
+**Job**, or `koine translate` locally) talks to Gemini.
+
+Verify it yourself — this prints the exact Vertex endpoint each call hits:
+
+```bash
+export GOOGLE_GENAI_USE_VERTEXAI=TRUE GOOGLE_CLOUD_PROJECT=<your-project> GOOGLE_CLOUD_LOCATION=global
+python - <<'PY'
+from google.genai import _api_client as ac
+_orig = ac.BaseApiClient._build_request
+ac.BaseApiClient._build_request = lambda self, m, p, d, o=None: (
+    lambda r: (print("[VERTEX-CALL]", r.method, r.url) or r))(_orig(self, m, p, d, o))
+import sys; sys.argv = ["koine", "translate", "--source", "README.md",
+    "--translation", "es=README.es.md", "--source-lang", "en"]
+from koine.__main__ import main; raise SystemExit(main())
+PY
+# each block prints a POST to
+# https://aiplatform.googleapis.com/.../models/gemini-3.5-flash:generateContent
+```
+
 ## Adopting a repo that already has translations
 
 Nobody starts from zero. `koine adopt` aligns existing translations against
